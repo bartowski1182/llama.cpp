@@ -1351,7 +1351,7 @@ class LlamaModel(Model):
                     datas: list[Tensor] = []
 
                     for xid in range(n_experts):
-                        ename = f"model.layers.{bid}.feed_forward.experts.{xid}.{wid}.weight"
+                        ename = f"layers.{bid}.feed_forward.experts.{xid}.{wid}.weight"
                         datas.append(self._experts[bid][ename])
                         del self._experts[bid][ename]
 
