@@ -2238,6 +2238,7 @@ class GemmaModel(Model):
             self._set_vocab_sentencepiece()
         except FileNotFoundError:
             self._set_vocab_llama_hf()
+            return
 
         # TODO: these special tokens should be exported only for the CodeGemma family
         special_vocab = gguf.SpecialVocab(self.dir_model, load_merges=False,
