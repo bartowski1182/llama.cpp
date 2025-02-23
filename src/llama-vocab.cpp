@@ -392,6 +392,19 @@ struct llm_tokenizer_bpe : llm_tokenizer {
                     "'s|'t|'re|'ve|'m|'ll|'d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)",
                 };
                 break;
+            case LLAMA_VOCAB_PRE_TYPE_MOONLIGHT:
+                // original regex from tokenization_moonshot.py
+                // https://huggingface.co/moonshotai/Moonlight-16B-A3B-Instruct/blob/main/tokenization_moonshot.py
+                regex_exprs = {
+                    "[\\p{Han}]+",
+                    "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\p{M}&&[^\\p{Han}]]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?",
+                    "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?",
+                    "\\p{N}{1,3}",
+                    " ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*",
+                    "\\s*[\\r\\n]+",
+                    "\\s+(?!\\S)",
+                    "\\s+""",
+                }
             default:
                 // default regex for BPE tokenization pre-processing
                 regex_exprs = {
@@ -1592,7 +1605,11 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
             } else if (
                 tokenizer_pre == "megrez") {
                 pre_type = LLAMA_VOCAB_PRE_TYPE_QWEN2;
-            } else {
+            } else if (
+                tokenizer_pre == "moonlight") {
+                pre_type = LLAMA_VOCAB_PRE_TYPE_MOONLIGHT;
+                clean_spaces = false;
+            else {
                 throw std::runtime_error(format("unknown pre-tokenizer type: '%s'", tokenizer_pre.c_str()));
             }
         } else if (type == LLAMA_VOCAB_TYPE_SPM) {

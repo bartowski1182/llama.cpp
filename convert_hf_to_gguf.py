@@ -699,6 +699,9 @@ class Model:
         if chkhsh == "b3f499bb4255f8ca19fccd664443283318f2fd2414d5e0b040fbdd0cc195d6c5":
             # ref: https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B
             res = "deepseek-r1-qwen"
+        if chkhsh == "81212dc7cdb7e0c1074ca62c5aeab0d43c9f52b8a737be7b12a777c953027890":
+            # ref: https://huggingface.co/moonshotai/Moonlight-16B-A3B-Instruct
+            res = "moonlight"
 
         if res is None:
             logger.warning("\n")
