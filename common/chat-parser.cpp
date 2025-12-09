@@ -692,7 +692,18 @@ static void common_chat_parse_mistral_nemo(common_chat_msg_parser & builder) {
     }
 
     static const common_regex prefix(regex_escape("[TOOL_CALLS]"));
-    parse_prefixed_json_tool_call_array(builder, prefix);
+    if (auto res = builder.try_find_regex(prefix)) {
+        // Found [TOOL_CALLS] prefix, parse as Mistral Nemo format
+        static const std::vector<std::vector<std::string>> args_paths = { { "arguments" } };
+        auto tool_calls = builder.consume_json_with_dumped_args(args_paths);
+        if (!builder.add_tool_calls(tool_calls.value) || tool_calls.is_partial) {
+            throw common_chat_msg_partial_exception("incomplete tool call array");
+        }
+    } else {
+        // No [TOOL_CALLS] prefix found, try generic JSON format as fallback
+        // This handles models that may output {"tool_calls": [...]} without the prefix
+        common_chat_parse_generic(builder);
+    }
 }
 
 static void common_chat_parse_magistral(common_chat_msg_parser & builder) {
@@ -704,7 +715,17 @@ static void common_chat_parse_magistral(common_chat_msg_parser & builder) {
     }
 
     static const common_regex prefix(regex_escape("[TOOL_CALLS]"));
-    parse_prefixed_json_tool_call_array(builder, prefix);
+    if (auto res = builder.try_find_regex(prefix)) {
+        // Found [TOOL_CALLS] prefix, parse as Magistral format
+        static const std::vector<std::vector<std::string>> args_paths = { { "arguments" } };
+        auto tool_calls = builder.consume_json_with_dumped_args(args_paths);
+        if (!builder.add_tool_calls(tool_calls.value) || tool_calls.is_partial) {
+            throw common_chat_msg_partial_exception("incomplete tool call array");
+        }
+    } else {
+        // No [TOOL_CALLS] prefix found, try generic JSON format as fallback
+        common_chat_parse_generic(builder);
+    }
 }
 
 static void common_chat_parse_command_r7b(common_chat_msg_parser & builder) {
