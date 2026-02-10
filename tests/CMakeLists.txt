@@ -155,6 +155,8 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
         target_include_directories(test-json-schema-to-grammar PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
     endif()
 
+    llama_build_and_test(test-quant-type-selection.cpp)
+
     if (NOT GGML_BACKEND_DL)
         llama_build(test-quantize-stats.cpp)
     endif()
