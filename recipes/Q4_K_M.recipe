@@ -8,12 +8,12 @@ default Q4_K
   arch=falcon                    : Q8_0
 
 [attn_v]
-  more_bits                      : Q6_K
   model_type=70B                 : Q5_K
-  n_expert>=8                    : Q8_0
+  more_bits                      : Q6_K
+  n_expert=8                     : Q8_0
 
 [attn_k]
-  n_expert>=8                    : Q8_0
+  n_expert=8                     : Q8_0
 
 [attn_qkv]
   *                              : Q5_K
@@ -24,4 +24,4 @@ default Q4_K
   arch=falcon, layer=more_bits   : Q5_K
 
 [attn_output]
-  n_expert>=8                    : Q5_K
+  n_expert=8                     : Q5_K

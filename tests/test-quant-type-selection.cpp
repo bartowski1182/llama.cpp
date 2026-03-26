@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -428,6 +429,37 @@ static bool run_test_section(quantize_state_impl *    qs,
     return all_pass;
 }
 
+// ---------------------------------------------------------------------------
+// Recipe validation: compare recipe output against ftype output
+// ---------------------------------------------------------------------------
+
+static bool run_recipe_test(llama_model *  model,
+                            mock_tensors & mt,
+                            llama_ftype    ftype,
+                            const std::string & recipe_path,
+                            const std::vector<ggml_type> & ftype_results) {
+    llama_model_quantize_params qparams = llama_model_quantize_default_params();
+    qparams.recipe_path = recipe_path.c_str();
+    quantize_state_impl * qs = llama_quant_init(model, &qparams);
+
+    std::vector<ggml_type> recipe_results(mt.tensors.size());
+    llama_quant_compute_types(qs, ftype, mt.tensors.data(), recipe_results.data(), mt.tensors.size());
+    llama_quant_free(qs);
+
+    bool all_pass = true;
+    for (size_t i = 0; i < mt.tensors.size(); i++) {
+        if (recipe_results[i] != ftype_results[i]) {
+            printf("  FAIL  %-50s recipe %s vs ftype %s\n",
+                   ggml_get_name(mt.tensors[i]),
+                   ggml_type_name(recipe_results[i]),
+                   ggml_type_name(ftype_results[i]));
+            all_pass = false;
+        }
+    }
+
+    return all_pass;
+}
+
 static int run_remote_tests(const std::string & snapshot_dir, const char * argv0) {
     int total_pass = 0;
     int total_fail = 0;
@@ -473,11 +505,42 @@ static int run_remote_tests(const std::string & snapshot_dir, const char * argv0
             }
         }
 
+        // recipe validation: for each ftype with a matching recipe, compare outputs
+        int recipe_pass = 0;
+        int recipe_fail = 0;
+
+        for (const auto & section : sections) {
+            const char * fname = llama_ftype_to_name(section.ftype);
+            if (!fname) {
+                continue;
+            }
+            std::string recipe_path = std::string("recipes/") + fname + ".recipe";
+            if (!std::filesystem::exists(recipe_path)) {
+                continue;
+            }
+
+            // compute ftype-based results to compare against
+            std::vector<ggml_type> ftype_results(mt.tensors.size());
+            llama_quant_compute_types(qs, section.ftype, mt.tensors.data(), ftype_results.data(), mt.tensors.size());
+
+            bool pass = run_recipe_test(model, mt, section.ftype, recipe_path, ftype_results);
+            if (pass) {
+                recipe_pass++;
+            } else {
+                printf("  FAIL  recipe %s does not match ftype %s\n", recipe_path.c_str(), fname);
+                recipe_fail++;
+            }
+        }
+
         printf("  %s  %s: %d/%d ftype sections passed (%d tensors)\n", model_fail == 0 ? "PASS" : "FAIL", name.c_str(),
                model_pass, model_pass + model_fail, (int) mt.tensors.size());
+        if (recipe_pass + recipe_fail > 0) {
+            printf("  %s  %s: %d/%d recipe tests passed\n", recipe_fail == 0 ? "PASS" : "FAIL", name.c_str(),
+                   recipe_pass, recipe_pass + recipe_fail);
+        }
         printf("\n");
 
-        if (model_fail == 0) {
+        if (model_fail == 0 && recipe_fail == 0) {
             total_pass++;
         } else {
             total_fail++;
