@@ -78,10 +78,14 @@ static recipe_condition parse_condition(const std::string & raw) {
         return cond;
     }
     if (tok == "has_imatrix") {
-        return { recipe_condition_type::HAS_IMATRIX, recipe_comparison::EQ };
+        cond.type = recipe_condition_type::HAS_IMATRIX;
+        cond.cmp  = recipe_comparison::EQ;
+        return cond;
     }
     if (tok == "!has_imatrix") {
-        return { recipe_condition_type::HAS_IMATRIX, recipe_comparison::NEG };
+        cond.type = recipe_condition_type::HAS_IMATRIX;
+        cond.cmp  = recipe_comparison::NEG;
+        return cond;
     }
 
     // key<op>value

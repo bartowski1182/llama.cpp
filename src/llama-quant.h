@@ -1,7 +1,5 @@
 #pragma once
 
-struct quant_recipe;
-
 // tensor categorization - used to avoid repeated string matching in quantization logic.
 // this is different from LLM_TN - we want broad categories, not specific tensor names per arch.
 enum class tensor_category {

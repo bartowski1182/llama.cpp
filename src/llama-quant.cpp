@@ -10,6 +10,7 @@
 #include <cstring>
 #include <cinttypes>
 #include <filesystem>
+#include <optional>
 #include <fstream>
 #include <mutex>
 #include <regex>
@@ -188,7 +189,7 @@ struct quantize_state_impl {
     std::vector<std::pair<std::regex, ggml_type>> tensor_type_patterns;
 
     // quantization recipe (loaded from file, used in llama_tensor_get_type)
-    std::unique_ptr<quant_recipe> recipe;
+    std::optional<quant_recipe> recipe;
 
     quantize_state_impl(const llama_model & model, const llama_model_quantize_params * params):
         model(model), params(params)
@@ -202,7 +203,7 @@ struct quantize_state_impl {
         }
 
         if (params->recipe_path) {
-            recipe = std::make_unique<quant_recipe>(load_recipe(params->recipe_path));
+            recipe = load_recipe(params->recipe_path);
             LLAMA_LOG_INFO("%s: using recipe '%s' (default type: %s)\n", __func__, recipe->name.c_str(), ggml_type_name(recipe->default_type));
         }
     }

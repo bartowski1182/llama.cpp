@@ -1,5 +1,6 @@
 #include "llama-quant-recipe.h"
 
+#undef NDEBUG
 #include <cassert>
 #include <cstdio>
 #include <string>
