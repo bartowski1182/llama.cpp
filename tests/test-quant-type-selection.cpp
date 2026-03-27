@@ -5,6 +5,7 @@
 #include "ggml-cpp.h"
 #include "gguf-model-data.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -268,6 +269,17 @@ static mock_tensors build_mock_tensors(const quantize_state_impl * qs,
             result.push_back(gt);
         }
     }
+
+    // sort by layer index then name, matching llama_model_loader::weight_name_comparer
+    std::sort(result.begin(), result.end(), [](const ggml_tensor * a, const ggml_tensor * b) {
+        int a_layer = -1, b_layer = -1;
+        sscanf(a->name, "blk.%d.", &a_layer);
+        sscanf(b->name, "blk.%d.", &b_layer);
+        if (a_layer != b_layer) {
+            return a_layer < b_layer;
+        }
+        return strcmp(a->name, b->name) < 0;
+    });
 
     return { std::move(ctx), std::move(result) };
 }
