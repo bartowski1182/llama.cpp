@@ -169,14 +169,20 @@ struct quantize_state_impl {
     const llama_model                 & model;
     const llama_model_quantize_params * params;
 
-    int n_attention_wv = 0;
-    int n_ffn_down     = 0;
-    int n_ffn_gate     = 0;
-    int n_ffn_up       = 0;
-    int i_attention_wv = 0;
-    int i_ffn_down     = 0;
-    int i_ffn_gate     = 0;
-    int i_ffn_up       = 0;
+    int n_attention_wv   = 0;
+    int n_attention_v    = 0;
+    int n_attention_kv_b = 0;
+    int n_attention_qkv  = 0;
+    int n_ffn_down       = 0;
+    int n_ffn_gate       = 0;
+    int n_ffn_up         = 0;
+    int i_attention_wv   = 0;
+    int i_attention_v    = 0;
+    int i_attention_kv_b = 0;
+    int i_attention_qkv  = 0;
+    int i_ffn_down       = 0;
+    int i_ffn_gate       = 0;
+    int i_ffn_up         = 0;
 
     int n_fallback    = 0;
 
@@ -729,9 +735,16 @@ static ggml_type recipe_evaluate(quantize_state_impl & qs, const ggml_tensor * t
     int n_category = 0;
     switch (tm.category) {
         case tensor_category::ATTENTION_V:
+            i_category = qs.i_attention_v++;
+            n_category = qs.n_attention_v;
+            break;
         case tensor_category::ATTENTION_KV_B:
-            i_category = qs.i_attention_wv++;
-            n_category = qs.n_attention_wv;
+            i_category = qs.i_attention_kv_b++;
+            n_category = qs.n_attention_kv_b;
+            break;
+        case tensor_category::ATTENTION_QKV:
+            i_category = qs.i_attention_qkv++;
+            n_category = qs.n_attention_qkv;
             break;
         case tensor_category::FFN_DOWN:
             i_category = qs.i_ffn_down++;
@@ -749,16 +762,39 @@ static ggml_type recipe_evaluate(quantize_state_impl & qs, const ggml_tensor * t
             break;
     }
 
-    auto it = recipe.categories.find(tm.category);
-    if (it == recipe.categories.end()) {
-        return recipe.default_type;
+    // for tied embeddings, apply output rules to token_embd
+    tensor_category lookup_cat = tm.category;
+    if (tm.category == tensor_category::TOKEN_EMBD && qs.has_tied_embeddings) {
+        lookup_cat = tensor_category::OUTPUT;
     }
+
+    // also increment the combined attn_wv counter for attn_v-like categories
+    int i_wv = 0, n_wv = 0;
+    if (category_is_attn_v(tm.category)) {
+        i_wv = qs.i_attention_wv++;
+        n_wv = qs.n_attention_wv;
+    }
+
+    auto it = recipe.categories.find(lookup_cat);
+    if (it == recipe.categories.end()) {
+        // for attn_v-like categories, fall back to [attn_wv] rules
+        if (category_is_attn_v(tm.category)) {
+            it = recipe.categories.find(tensor_category::ATTENTION_WV);
+        }
+        if (it == recipe.categories.end()) {
+            return recipe.default_type;
+        }
+    }
+
+    // when using [attn_wv] rules, use the combined counter
+    int i_eval = (it->first == tensor_category::ATTENTION_WV) ? i_wv : i_category;
+    int n_eval = (it->first == tensor_category::ATTENTION_WV) ? n_wv : n_category;
 
     ggml_type result = recipe.default_type;
     for (const auto & rule : it->second) {
         bool match = true;
         for (const auto & cond : rule.conditions) {
-            if (!eval_condition(cond, i_layer, n_layer, i_category, n_category, qs)) {
+            if (!eval_condition(cond, i_layer, n_layer, i_eval, n_eval, qs)) {
                 match = false;
                 break;
             }
@@ -958,6 +994,18 @@ static void init_quantize_state_counters(quantize_state_impl & qs, std::vector<t
 
         if (category_is_attn_v(cat)) {
             ++qs.n_attention_wv;
+        }
+
+        if (cat == tensor_category::ATTENTION_V) {
+            ++qs.n_attention_v;
+        }
+
+        if (cat == tensor_category::ATTENTION_KV_B) {
+            ++qs.n_attention_kv_b;
+        }
+
+        if (cat == tensor_category::ATTENTION_QKV) {
+            ++qs.n_attention_qkv;
         }
 
         if (cat == tensor_category::OUTPUT) {
@@ -1487,15 +1535,21 @@ void llama_quant_compute_types(
         ggml_type * result_types,
         size_t n_tensors) {
     // reset per-computation state
-    qs->n_attention_wv  = 0;
-    qs->n_ffn_down      = 0;
-    qs->n_ffn_gate      = 0;
-    qs->n_ffn_up        = 0;
-    qs->i_attention_wv  = 0;
-    qs->i_ffn_down      = 0;
-    qs->i_ffn_gate      = 0;
-    qs->i_ffn_up        = 0;
-    qs->n_fallback      = 0;
+    qs->n_attention_wv   = 0;
+    qs->n_attention_v    = 0;
+    qs->n_attention_kv_b = 0;
+    qs->n_attention_qkv  = 0;
+    qs->n_ffn_down       = 0;
+    qs->n_ffn_gate       = 0;
+    qs->n_ffn_up         = 0;
+    qs->i_attention_wv   = 0;
+    qs->i_attention_v    = 0;
+    qs->i_attention_kv_b = 0;
+    qs->i_attention_qkv  = 0;
+    qs->i_ffn_down       = 0;
+    qs->i_ffn_gate       = 0;
+    qs->i_ffn_up         = 0;
+    qs->n_fallback       = 0;
     qs->has_imatrix     = false;
     qs->has_tied_embeddings = true;
 

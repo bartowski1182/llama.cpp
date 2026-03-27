@@ -33,18 +33,20 @@ static ggml_type parse_ggml_type(const std::string & s) {
 }
 
 static tensor_category parse_category(const std::string & s) {
-    std::string l = to_lower(s);
-    if (l == "output")      return tensor_category::OUTPUT;
-    if (l == "token_embd")  return tensor_category::TOKEN_EMBD;
-    if (l == "attn_v")      return tensor_category::ATTENTION_V;
-    if (l == "attn_k")      return tensor_category::ATTENTION_K;
-    if (l == "attn_q")      return tensor_category::ATTENTION_Q;
-    if (l == "attn_qkv")    return tensor_category::ATTENTION_QKV;
-    if (l == "attn_kv_b")   return tensor_category::ATTENTION_KV_B;
-    if (l == "attn_output") return tensor_category::ATTENTION_OUTPUT;
-    if (l == "ffn_up")      return tensor_category::FFN_UP;
-    if (l == "ffn_gate")    return tensor_category::FFN_GATE;
-    if (l == "ffn_down")    return tensor_category::FFN_DOWN;
+    std::string u = s;
+    for (auto & c : u) c = (char)std::toupper(c);
+    if (u == "OUTPUT")           return tensor_category::OUTPUT;
+    if (u == "TOKEN_EMBD")       return tensor_category::TOKEN_EMBD;
+    if (u == "ATTENTION_V")      return tensor_category::ATTENTION_V;
+    if (u == "ATTENTION_K")      return tensor_category::ATTENTION_K;
+    if (u == "ATTENTION_Q")      return tensor_category::ATTENTION_Q;
+    if (u == "ATTENTION_QKV")    return tensor_category::ATTENTION_QKV;
+    if (u == "ATTENTION_KV_B")   return tensor_category::ATTENTION_KV_B;
+    if (u == "ATTENTION_WV")     return tensor_category::ATTENTION_WV;
+    if (u == "ATTENTION_OUTPUT") return tensor_category::ATTENTION_OUTPUT;
+    if (u == "FFN_UP")           return tensor_category::FFN_UP;
+    if (u == "FFN_GATE")         return tensor_category::FFN_GATE;
+    if (u == "FFN_DOWN")         return tensor_category::FFN_DOWN;
     return tensor_category::OTHER;
 }
 

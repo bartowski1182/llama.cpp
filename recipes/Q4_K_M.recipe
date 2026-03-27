@@ -3,25 +3,22 @@
 name    Q4_K_M
 default Q4_K
 
-[output]
+[OUTPUT]
   *                              : Q6_K
   arch=falcon                    : Q8_0
 
-[attn_v]
+[ATTENTION_WV]
   model_type=70B                 : Q5_K
   more_bits                      : Q6_K
   n_expert=8                     : Q8_0
 
-[attn_k]
+[ATTENTION_K]
   n_expert=8                     : Q8_0
 
-[attn_qkv]
-  *                              : Q5_K
-
-[ffn_down]
+[FFN_DOWN]
   layer=more_bits                : Q6_K
   arch=falcon, layer<1/16        : Q6_K
   arch=falcon, layer=more_bits   : Q5_K
 
-[attn_output]
+[ATTENTION_OUTPUT]
   n_expert=8                     : Q5_K

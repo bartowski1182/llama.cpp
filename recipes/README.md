@@ -19,7 +19,7 @@ If the argument is not a file path, the tool looks for `recipes/<name>.recipe`.
 name    Q4_K_M
 default Q4_K
 
-[category]
+[CATEGORY]
   conditions : TYPE
 ```
 
@@ -30,21 +30,24 @@ default Q4_K
 
 ### Categories
 
-Each `[category]` block contains rules for a group of tensors:
+Each `[CATEGORY]` block contains rules for a group of tensors. Category names are case-insensitive.
 
-| Category       | Tensors matched                          |
-|----------------|------------------------------------------|
-| `output`       | output.weight (and tied token embeddings) |
-| `token_embd`   | token_embd.weight                        |
-| `attn_v`       | attention value weights                  |
-| `attn_k`       | attention key weights                    |
-| `attn_q`       | attention query weights                  |
-| `attn_qkv`     | fused QKV weights                        |
-| `attn_kv_b`    | fused KV bias weights                    |
-| `attn_output`  | attention output projection              |
-| `ffn_up`       | feed-forward up projection               |
-| `ffn_gate`     | feed-forward gate projection             |
-| `ffn_down`     | feed-forward down projection             |
+| Category           | Tensors matched                              |
+|--------------------|----------------------------------------------|
+| `OUTPUT`           | output.weight (and tied token embeddings)     |
+| `TOKEN_EMBD`       | token_embd.weight                            |
+| `ATTENTION_V`      | attention value weights                      |
+| `ATTENTION_K`      | attention key weights                        |
+| `ATTENTION_Q`      | attention query weights                      |
+| `ATTENTION_QKV`    | fused QKV weights                            |
+| `ATTENTION_KV_B`   | fused KV bias weights                        |
+| `ATTENTION_WV`     | combined: matches V, QKV, and KV_B           |
+| `ATTENTION_OUTPUT` | attention output projection                  |
+| `FFN_UP`           | feed-forward up projection                   |
+| `FFN_GATE`         | feed-forward gate projection                 |
+| `FFN_DOWN`         | feed-forward down projection                 |
+
+These categories match those found in `llama-quant.h`
 
 Tensors not covered by any category block use the `default` type.
 
@@ -74,7 +77,7 @@ Multiple conditions can be comma-separated. All conditions in a rule must be tru
 
 ### `more_bits`
 
-A built-in heuristic that allocates more bits to the first 1/8, last 1/8, and every third layer in between. Uses **category-relative** counts (e.g., position among all attn_v tensors in the model).
+A built-in heuristic that allocates more bits to the first 1/8, last 1/8, and every third layer in between. Uses **category-relative** counts (e.g., position among all ATTENTION_V tensors). When used inside an `[ATTENTION_WV]` block, uses the combined counter across all attn_v-like tensors (V, QKV, KV_B).
 
 ```
   more_bits : Q6_K
@@ -172,28 +175,25 @@ Whether an importance matrix was provided.
 name    Q4_K_M
 default Q4_K
 
-[output]
+[OUTPUT]
   *                              : Q6_K
   arch=falcon                    : Q8_0
 
-[attn_v]
-  more_bits                      : Q6_K
+[ATTENTION_WV]
   model_type=70B                 : Q5_K
-  n_expert>=8                    : Q8_0
+  more_bits                      : Q6_K
+  n_expert=8                     : Q8_0
 
-[attn_k]
-  n_expert>=8                    : Q8_0
+[ATTENTION_K]
+  n_expert=8                     : Q8_0
 
-[attn_qkv]
-  *                              : Q5_K
-
-[ffn_down]
+[FFN_DOWN]
   layer=more_bits                : Q6_K
   arch=falcon, layer<1/16        : Q6_K
   arch=falcon, layer=more_bits   : Q5_K
 
-[attn_output]
-  n_expert>=8                    : Q5_K
+[ATTENTION_OUTPUT]
+  n_expert=8                     : Q5_K
 ```
 
-Reading the `[attn_v]` block: start with the default (Q4_K). If this tensor gets more bits (category-relative heuristic), use Q6_K. If the model is 70B, override to Q5_K. If there are 8+ experts, override to Q8_0. The last matching rule wins.
+Reading the `[ATTENTION_WV]` block: start with the default (Q4_K). If the model is 70B, override to Q5_K. If this tensor gets more bits (using the combined ATTENTION_WV counter), override to Q6_K. If there are exactly 8 experts, override to Q8_0. The last matching rule wins.

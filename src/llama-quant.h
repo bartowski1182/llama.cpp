@@ -9,6 +9,7 @@ enum class tensor_category {
     ATTENTION_K,
     ATTENTION_QKV,
     ATTENTION_KV_B,
+    ATTENTION_WV,        // recipe-only: matches V, QKV, and KV_B (combined group)
     ATTENTION_OUTPUT,
     FFN_UP,
     FFN_GATE,
