@@ -119,6 +119,9 @@ class ProgressBar {
     static inline std::map<const ProgressBar *, int> lines;
     static inline int max_line = 0;
 
+    std::string filename;
+    size_t len = 0;
+
     static void cleanup(const ProgressBar * line) {
         lines.erase(line);
         if (lines.empty()) {
@@ -135,7 +138,23 @@ class ProgressBar {
     }
 
 public:
-    ProgressBar() = default;
+    ProgressBar(const std::string & url = "") : filename(url) {
+        if (auto pos = filename.rfind('/'); pos != std::string::npos) {
+            filename = filename.substr(pos + 1);
+        }
+        if (auto pos = filename.find('?'); pos != std::string::npos) {
+            filename = filename.substr(0, pos);
+        }
+        for (size_t i = 0; i < filename.size(); ++i) {
+            if ((filename[i] & 0xC0) != 0x80) {
+                if (len++ == 39) {
+                    filename.resize(i);
+                    filename += "…";
+                    break;
+                }
+            }
+        }
+    }
 
     ~ProgressBar() {
         std::lock_guard<std::mutex> lock(mutex);
@@ -143,11 +162,7 @@ public:
     }
 
     void update(size_t current, size_t total) {
-        if (!is_output_a_tty()) {
-            return;
-        }
-
-        if (!total) {
+        if (!total || !is_output_a_tty()) {
             return;
         }
 
@@ -159,28 +174,27 @@ public:
         }
         int lines_up = max_line - lines[this];
 
-        size_t width = 50;
+        size_t bar = 55 - len;
         size_t pct = (100 * current) / total;
-        size_t pos = (width * current) / total;
-
-        std::cout << "\033[s";
+        size_t pos = (bar * current) / total;
 
         if (lines_up > 0) {
             std::cout << "\033[" << lines_up << "A";
         }
-        std::cout << "\033[2K\r["
-            << std::string(pos, '=')
-            << (pos < width ? ">" : "")
-            << std::string(width - pos, ' ')
-            << "] " << std::setw(3) << pct << "%  ("
-            << current / (1024 * 1024) << " MB / "
-            << total / (1024 * 1024) << " MB) "
-            << "\033[u";
+        std::cout << '\r' << "Downloading " << filename << " ";
 
-        std::cout.flush();
+        for (size_t i = 0; i < bar; ++i) {
+            std::cout << (i < pos ? "—" : " ");
+        }
+        std::cout << std::setw(4) << pct << "%\033[K";
+
+        if (lines_up > 0) {
+            std::cout << "\033[" << lines_up << "B";
+        }
+        std::cout << '\r' << std::flush;
 
         if (current == total) {
-             cleanup(this);
+            cleanup(this);
         }
     }
 
@@ -208,7 +222,7 @@ static bool common_pull_file(httplib::Client & cli,
     const char * func = __func__; // avoid __func__ inside a lambda
     size_t downloaded = existing_size;
     size_t progress_step = 0;
-    ProgressBar bar;
+    ProgressBar bar(resolve_path);
 
     auto res = cli.Get(resolve_path, headers,
         [&](const httplib::Response &response) {
@@ -286,7 +300,7 @@ static int common_download_file_single_online(const std::string        & url,
     const bool file_exists = std::filesystem::exists(path);
 
     if (file_exists && skip_etag) {
-        LOG_INF("%s: using cached file: %s\n", __func__, path.c_str());
+        LOG_DBG("%s: using cached file: %s\n", __func__, path.c_str());
         return 304; // 304 Not Modified - fake cached response
     }
 
@@ -294,7 +308,7 @@ static int common_download_file_single_online(const std::string        & url,
     if (file_exists) {
         last_etag = read_etag(path);
     } else {
-        LOG_INF("%s: no previous model file found %s\n", __func__, path.c_str());
+        LOG_DBG("%s: no previous model file found %s\n", __func__, path.c_str());
     }
 
     auto head = cli.Head(parts.path);
@@ -328,11 +342,11 @@ static int common_download_file_single_online(const std::string        & url,
 
     if (file_exists) {
         if (etag.empty()) {
-            LOG_INF("%s: using cached file (no server etag): %s\n", __func__, path.c_str());
+            LOG_DBG("%s: using cached file (no server etag): %s\n", __func__, path.c_str());
             return 304; // 304 Not Modified - fake cached response
         }
         if (!last_etag.empty() && last_etag == etag) {
-            LOG_INF("%s: using cached file (same etag): %s\n", __func__, path.c_str());
+            LOG_DBG("%s: using cached file (same etag): %s\n", __func__, path.c_str());
             return 304; // 304 Not Modified - fake cached response
         }
         if (remove(path.c_str()) != 0) {
@@ -368,7 +382,7 @@ static int common_download_file_single_online(const std::string        & url,
             }
         }
 
-        LOG_INF("%s: downloading from %s to %s (etag:%s)...\n",
+        LOG_DBG("%s: downloading from %s to %s (etag:%s)...\n",
                 __func__, common_http_show_masked_url(parts).c_str(),
                 path_temporary.c_str(), etag.c_str());
 
@@ -437,7 +451,7 @@ int common_download_file_single(const std::string & url,
         return -1;
     }
 
-    LOG_INF("%s: using cached file (offline mode): %s\n", __func__, path.c_str());
+    LOG_DBG("%s: using cached file (offline mode): %s\n", __func__, path.c_str());
     return 304; // Not Modified - fake cached response
 }
 
@@ -454,7 +468,9 @@ static gguf_split_info get_gguf_split_info(const std::string & path) {
     std::smatch m;
 
     std::string prefix = path;
-    string_remove_suffix(prefix, ".gguf");
+    if (!string_remove_suffix(prefix, ".gguf")) {
+        return {};
+    }
 
     int index = 1;
     int count = 1;
@@ -546,6 +562,20 @@ static hf_cache::hf_file find_best_mmproj(const hf_cache::hf_files & files,
     return best;
 }
 
+static bool gguf_filename_is_model(const std::string & filepath) {
+    if (!string_ends_with(filepath, ".gguf")) {
+        return false;
+    }
+
+    std::string filename = filepath;
+    if (auto pos = filename.rfind('/'); pos != std::string::npos) {
+        filename = filename.substr(pos + 1);
+    }
+
+    return filename.find("mmproj")  == std::string::npos &&
+           filename.find("imatrix") == std::string::npos;
+}
+
 static hf_cache::hf_file find_best_model(const hf_cache::hf_files & files,
                                          const std::string        & tag) {
     std::vector<std::string> tags;
@@ -559,8 +589,7 @@ static hf_cache::hf_file find_best_model(const hf_cache::hf_files & files,
     for (const auto & t : tags) {
         std::regex pattern(t + "[.-]", std::regex::icase);
         for (const auto & f : files) {
-            if (string_ends_with(f.path, ".gguf") &&
-                f.path.find("mmproj") == std::string::npos &&
+            if (gguf_filename_is_model(f.path) &&
                 std::regex_search(f.path, pattern)) {
                 return f;
             }
@@ -568,8 +597,7 @@ static hf_cache::hf_file find_best_model(const hf_cache::hf_files & files,
     }
 
     for (const auto & f : files) {
-        if (string_ends_with(f.path, ".gguf") &&
-            f.path.find("mmproj") == std::string::npos) {
+        if (gguf_filename_is_model(f.path)) {
             return f;
         }
     }
