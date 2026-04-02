@@ -658,7 +658,8 @@ std::optional<gguf_remote_model> gguf_fetch_model_meta(
 gguf_context_ptr gguf_fetch_gguf_ctx(
         const std::string & repo,
         const std::string & quant,
-        const std::string & cache_dir) {
+        const std::string & cache_dir,
+        bool verbose) {
     std::string cdir = cache_dir.empty() ? get_default_cache_dir() : cache_dir;
     std::string repo_part = sanitize_for_path(repo);
 
@@ -669,7 +670,7 @@ gguf_context_ptr gguf_fetch_gguf_ctx(
         return nullptr;
     }
 
-    auto model_opt = fetch_or_cached(repo, filename, cdir, repo_part);
+    auto model_opt = fetch_or_cached(repo, filename, cdir, repo_part, verbose);
     if (!model_opt.has_value()) {
         fprintf(stderr, "gguf_fetch: failed to fetch %s\n", filename.c_str());
         return nullptr;
@@ -697,8 +698,10 @@ gguf_context_ptr gguf_fetch_gguf_ctx(
             return nullptr;
         }
 
-        fprintf(stderr, "gguf_fetch: split model with %u shards, fetching remaining %u...\n",
-                model.n_split, model.n_split - 1);
+        if (verbose) {
+            fprintf(stderr, "gguf_fetch: split model with %u shards, fetching remaining %u...\n",
+                    model.n_split, model.n_split - 1);
+        }
 
         for (int i = 2; i <= model.n_split; i++) {
             char num_buf[6], total_buf[6];
@@ -706,7 +709,7 @@ gguf_context_ptr gguf_fetch_gguf_ctx(
             snprintf(total_buf, sizeof(total_buf), "%05d", (int)model.n_split);
             std::string shard_name = split_prefix + "-" + num_buf + "-of-" + total_buf + ".gguf";
 
-            auto shard = fetch_or_cached(repo, shard_name, cdir, repo_part);
+            auto shard = fetch_or_cached(repo, shard_name, cdir, repo_part, verbose);
             if (!shard.has_value()) {
                 fprintf(stderr, "gguf_fetch: failed to fetch shard %d: %s\n", i, shard_name.c_str());
                 return nullptr;
