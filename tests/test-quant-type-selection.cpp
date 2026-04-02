@@ -1,9 +1,7 @@
-#include "llama.h"
-
 #include "../src/llama-ext.h"
-
 #include "ggml-cpp.h"
 #include "gguf-model-data.h"
+#include "llama.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -25,39 +23,39 @@ struct ftype_name_entry {
 };
 
 static const ftype_name_entry ftype_name_table[] = {
-    { "F32",        LLAMA_FTYPE_ALL_F32 },
-    { "F16",        LLAMA_FTYPE_MOSTLY_F16 },
-    { "BF16",       LLAMA_FTYPE_MOSTLY_BF16 },
-    { "Q4_0",       LLAMA_FTYPE_MOSTLY_Q4_0 },
-    { "Q4_1",       LLAMA_FTYPE_MOSTLY_Q4_1 },
-    { "Q5_0",       LLAMA_FTYPE_MOSTLY_Q5_0 },
-    { "Q5_1",       LLAMA_FTYPE_MOSTLY_Q5_1 },
-    { "Q8_0",       LLAMA_FTYPE_MOSTLY_Q8_0 },
-    { "Q2_K",       LLAMA_FTYPE_MOSTLY_Q2_K },
-    { "Q2_K_S",     LLAMA_FTYPE_MOSTLY_Q2_K_S },
-    { "Q3_K_S",     LLAMA_FTYPE_MOSTLY_Q3_K_S },
-    { "Q3_K_M",     LLAMA_FTYPE_MOSTLY_Q3_K_M },
-    { "Q3_K_L",     LLAMA_FTYPE_MOSTLY_Q3_K_L },
-    { "Q4_K_S",     LLAMA_FTYPE_MOSTLY_Q4_K_S },
-    { "Q4_K_M",     LLAMA_FTYPE_MOSTLY_Q4_K_M },
-    { "Q5_K_S",     LLAMA_FTYPE_MOSTLY_Q5_K_S },
-    { "Q5_K_M",     LLAMA_FTYPE_MOSTLY_Q5_K_M },
-    { "Q6_K",       LLAMA_FTYPE_MOSTLY_Q6_K },
-    { "IQ1_S",      LLAMA_FTYPE_MOSTLY_IQ1_S },
-    { "IQ1_M",      LLAMA_FTYPE_MOSTLY_IQ1_M },
-    { "IQ2_XXS",    LLAMA_FTYPE_MOSTLY_IQ2_XXS },
-    { "IQ2_XS",     LLAMA_FTYPE_MOSTLY_IQ2_XS },
-    { "IQ2_S",      LLAMA_FTYPE_MOSTLY_IQ2_S },
-    { "IQ2_M",      LLAMA_FTYPE_MOSTLY_IQ2_M },
-    { "IQ3_XXS",    LLAMA_FTYPE_MOSTLY_IQ3_XXS },
-    { "IQ3_XS",     LLAMA_FTYPE_MOSTLY_IQ3_XS },
-    { "IQ3_S",      LLAMA_FTYPE_MOSTLY_IQ3_S },
-    { "IQ3_M",      LLAMA_FTYPE_MOSTLY_IQ3_M },
-    { "IQ4_NL",     LLAMA_FTYPE_MOSTLY_IQ4_NL },
-    { "IQ4_XS",     LLAMA_FTYPE_MOSTLY_IQ4_XS },
-    { "TQ1_0",      LLAMA_FTYPE_MOSTLY_TQ1_0 },
-    { "TQ2_0",      LLAMA_FTYPE_MOSTLY_TQ2_0 },
-    { "MXFP4_MOE",  LLAMA_FTYPE_MOSTLY_MXFP4_MOE },
+    { "F32",       LLAMA_FTYPE_ALL_F32          },
+    { "F16",       LLAMA_FTYPE_MOSTLY_F16       },
+    { "BF16",      LLAMA_FTYPE_MOSTLY_BF16      },
+    { "Q4_0",      LLAMA_FTYPE_MOSTLY_Q4_0      },
+    { "Q4_1",      LLAMA_FTYPE_MOSTLY_Q4_1      },
+    { "Q5_0",      LLAMA_FTYPE_MOSTLY_Q5_0      },
+    { "Q5_1",      LLAMA_FTYPE_MOSTLY_Q5_1      },
+    { "Q8_0",      LLAMA_FTYPE_MOSTLY_Q8_0      },
+    { "Q2_K",      LLAMA_FTYPE_MOSTLY_Q2_K      },
+    { "Q2_K_S",    LLAMA_FTYPE_MOSTLY_Q2_K_S    },
+    { "Q3_K_S",    LLAMA_FTYPE_MOSTLY_Q3_K_S    },
+    { "Q3_K_M",    LLAMA_FTYPE_MOSTLY_Q3_K_M    },
+    { "Q3_K_L",    LLAMA_FTYPE_MOSTLY_Q3_K_L    },
+    { "Q4_K_S",    LLAMA_FTYPE_MOSTLY_Q4_K_S    },
+    { "Q4_K_M",    LLAMA_FTYPE_MOSTLY_Q4_K_M    },
+    { "Q5_K_S",    LLAMA_FTYPE_MOSTLY_Q5_K_S    },
+    { "Q5_K_M",    LLAMA_FTYPE_MOSTLY_Q5_K_M    },
+    { "Q6_K",      LLAMA_FTYPE_MOSTLY_Q6_K      },
+    { "IQ1_S",     LLAMA_FTYPE_MOSTLY_IQ1_S     },
+    { "IQ1_M",     LLAMA_FTYPE_MOSTLY_IQ1_M     },
+    { "IQ2_XXS",   LLAMA_FTYPE_MOSTLY_IQ2_XXS   },
+    { "IQ2_XS",    LLAMA_FTYPE_MOSTLY_IQ2_XS    },
+    { "IQ2_S",     LLAMA_FTYPE_MOSTLY_IQ2_S     },
+    { "IQ2_M",     LLAMA_FTYPE_MOSTLY_IQ2_M     },
+    { "IQ3_XXS",   LLAMA_FTYPE_MOSTLY_IQ3_XXS   },
+    { "IQ3_XS",    LLAMA_FTYPE_MOSTLY_IQ3_XS    },
+    { "IQ3_S",     LLAMA_FTYPE_MOSTLY_IQ3_S     },
+    { "IQ3_M",     LLAMA_FTYPE_MOSTLY_IQ3_M     },
+    { "IQ4_NL",    LLAMA_FTYPE_MOSTLY_IQ4_NL    },
+    { "IQ4_XS",    LLAMA_FTYPE_MOSTLY_IQ4_XS    },
+    { "TQ1_0",     LLAMA_FTYPE_MOSTLY_TQ1_0     },
+    { "TQ2_0",     LLAMA_FTYPE_MOSTLY_TQ2_0     },
+    { "MXFP4_MOE", LLAMA_FTYPE_MOSTLY_MXFP4_MOE },
 };
 
 static llama_ftype llama_ftype_from_name(const char * name) {
@@ -66,7 +64,7 @@ static llama_ftype llama_ftype_from_name(const char * name) {
             return e.ftype;
         }
     }
-    return (llama_ftype)-1;
+    return (llama_ftype) -1;
 }
 
 static const char * llama_ftype_to_name(llama_ftype ftype) {
@@ -235,15 +233,15 @@ static const int n_model_specs = (int) (sizeof(model_specs) / sizeof(model_specs
 
 static llama_model * build_mock_model_from_remote(const gguf_remote_model & remote) {
     llama_quant_model_desc desc = {};
-    desc.architecture  = remote.architecture.c_str();
-    desc.n_embd        = remote.n_embd;
-    desc.n_ff          = remote.n_ff;
-    desc.n_layer       = remote.n_layer;
-    desc.n_head        = remote.n_head;
-    desc.n_head_kv     = remote.n_head_kv;
-    desc.n_expert      = remote.n_expert;
-    desc.n_embd_head_k = remote.n_embd_head_k;
-    desc.n_embd_head_v = remote.n_embd_head_v;
+    desc.architecture           = remote.architecture.c_str();
+    desc.n_embd                 = remote.n_embd;
+    desc.n_ff                   = remote.n_ff;
+    desc.n_layer                = remote.n_layer;
+    desc.n_head                 = remote.n_head;
+    desc.n_head_kv              = remote.n_head_kv;
+    desc.n_expert               = remote.n_expert;
+    desc.n_embd_head_k          = remote.n_embd_head_k;
+    desc.n_embd_head_v          = remote.n_embd_head_v;
     return llama_quant_model_from_metadata(&desc);
 }
 
@@ -253,17 +251,15 @@ struct mock_tensors {
     std::vector<ggml_tensor *> tensors;
 };
 
-static mock_tensors build_mock_tensors(const quantize_state_impl * qs,
-                                       const gguf_remote_model &   remote) {
-    const size_t ctx_size = remote.tensors.size() * ggml_tensor_overhead();
-    struct ggml_init_params params = { ctx_size, nullptr, true };
-    ggml_context_ptr ctx(ggml_init(params));
+static mock_tensors build_mock_tensors(const quantize_state_impl * qs, const gguf_remote_model & remote) {
+    const size_t            ctx_size = remote.tensors.size() * ggml_tensor_overhead();
+    struct ggml_init_params params   = { ctx_size, nullptr, true };
+    ggml_context_ptr        ctx(ggml_init(params));
 
     std::vector<ggml_tensor *> result;
 
     for (const auto & t : remote.tensors) {
-        ggml_tensor * gt = ggml_new_tensor_4d(ctx.get(), GGML_TYPE_F32,
-                                               t.ne[0], t.ne[1], t.ne[2], t.ne[3]);
+        ggml_tensor * gt = ggml_new_tensor_4d(ctx.get(), GGML_TYPE_F32, t.ne[0], t.ne[1], t.ne[2], t.ne[3]);
         ggml_set_name(gt, t.name.c_str());
         if (llama_quant_tensor_allows_quantization(qs, gt)) {
             result.push_back(gt);
@@ -355,7 +351,7 @@ static int run_generate(const std::string & snapshot_dir) {
         const auto &                remote  = result.value();
         llama_model *               model   = build_mock_model_from_remote(remote);
         llama_model_quantize_params qparams = llama_model_quantize_default_params();
-        quantize_state_impl *       qs     = llama_quant_init(model, &qparams);
+        quantize_state_impl *       qs      = llama_quant_init(model, &qparams);
         auto                        mt      = build_mock_tensors(qs, remote);
 
         std::string content = generate_snapshot(name, remote, qs, mt);
@@ -383,9 +379,7 @@ static int run_generate(const std::string & snapshot_dir) {
 // Test mode: compare against snapshot files
 // ---------------------------------------------------------------------------
 
-static bool run_test_section(quantize_state_impl *    qs,
-                             mock_tensors &           mt,
-                             const snapshot_section & section) {
+static bool run_test_section(quantize_state_impl * qs, mock_tensors & mt, const snapshot_section & section) {
     // verify default_type matches what llama_ftype_get_default_type returns
     ggml_type computed_default = llama_ftype_get_default_type(section.ftype);
     if (computed_default != section.default_type) {
@@ -414,7 +408,8 @@ static bool run_test_section(quantize_state_impl *    qs,
         }
 
         if (got != expected) {
-            printf("  FAIL  %-50s %-10s expected %s, got %s\n", name, llama_ftype_to_name(section.ftype), ggml_type_name(expected), ggml_type_name(got));
+            printf("  FAIL  %-50s %-10s expected %s, got %s\n", name, llama_ftype_to_name(section.ftype),
+                   ggml_type_name(expected), ggml_type_name(got));
             all_pass = false;
         }
     }
@@ -448,7 +443,7 @@ static int run_remote_tests(const std::string & snapshot_dir, const char * argv0
         const auto &                remote  = result.value();
         llama_model *               model   = build_mock_model_from_remote(remote);
         llama_model_quantize_params qparams = llama_model_quantize_default_params();
-        quantize_state_impl *       qs     = llama_quant_init(model, &qparams);
+        quantize_state_impl *       qs      = llama_quant_init(model, &qparams);
         auto                        mt      = build_mock_tensors(qs, remote);
 
         std::string                   snapshot_path = snapshot_dir + "/" + snapshot_file_from_name(name) + ".schema";

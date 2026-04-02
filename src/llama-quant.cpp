@@ -1367,16 +1367,16 @@ void llama_quant_compute_types(
         ggml_type * result_types,
         size_t n_tensors) {
     // reset per-computation state
-    qs->n_attention_wv  = 0;
-    qs->n_ffn_down      = 0;
-    qs->n_ffn_gate      = 0;
-    qs->n_ffn_up        = 0;
-    qs->i_attention_wv  = 0;
-    qs->i_ffn_down      = 0;
-    qs->i_ffn_gate      = 0;
-    qs->i_ffn_up        = 0;
-    qs->n_fallback      = 0;
-    qs->has_imatrix     = false;
+    qs->n_attention_wv      = 0;
+    qs->n_ffn_down          = 0;
+    qs->n_ffn_gate          = 0;
+    qs->n_ffn_up            = 0;
+    qs->i_attention_wv      = 0;
+    qs->i_ffn_down          = 0;
+    qs->i_ffn_gate          = 0;
+    qs->i_ffn_up            = 0;
+    qs->n_fallback          = 0;
+    qs->has_imatrix         = false;
     qs->has_tied_embeddings = true;
 
     // build metadata from tensor names
