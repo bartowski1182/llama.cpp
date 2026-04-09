@@ -44,7 +44,8 @@ static __global__ void quantize_q8_1(
         return;
     }
 
-    y[ib].ds = make_half2(d, sum);
+    // clamp sum to fp16 range to avoid overflow when used in Q4_1/Q5_1 dot products
+    y[ib].ds = make_half2(d, fminf(65504.0f, fmaxf(-65504.0f, sum)));
 }
 
 __device__ __forceinline__ uint8_t compute_e8m0_scale(float amax) {
@@ -264,7 +265,8 @@ static __global__ void quantize_mmq_q8_1(
     const float d = 1.0f / d_inv;
 
     if (ds_layout == MMQ_Q8_1_DS_LAYOUT_DS4) {
-        y[ib].ds4[iqs/32] = make_half2(d, sum);
+        // clamp sum to fp16 range to avoid overflow when used in Q4_1/Q5_1 dot products
+        y[ib].ds4[iqs/32] = make_half2(d, fminf(65504.0f, fmaxf(-65504.0f, sum)));
     } else {
         y[ib].d4[iqs/32]  = d;
     }
