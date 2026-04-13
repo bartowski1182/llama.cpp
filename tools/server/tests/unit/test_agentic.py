@@ -141,11 +141,14 @@ class AgenticResult:
         lines = [f"\n{'=' * 72}", f"Model: {self.model_id}", f"{'=' * 72}"]
 
         for turn in self.turns:
+            reasoning = turn.get("reasoning_content")
+            reasoning_marker = " (with reasoning)" if reasoning else ""
+
             if "tool_name" in turn:
                 args_str = json.dumps(turn["arguments"], indent=None)
                 if len(args_str) > 80:
                     args_str = args_str[:75] + "[...]"
-                lines.append(f"  Turn {turn['turn']}: TOOL CALL  {turn['tool_name']}({args_str})")
+                lines.append(f"  Turn {turn['turn']}: TOOL CALL  {turn['tool_name']}({args_str}){reasoning_marker}")
             else:
                 content = turn.get("content", "")
                 if not isinstance(content, str):
@@ -154,7 +157,7 @@ class AgenticResult:
                 preview = content.replace("\n", "\\n")
                 if len(preview) > 100:
                     preview = preview[:100] + "[...]"
-                lines.append(f"  Turn {turn['turn']}: CONTENT    \"{preview}\"")
+                lines.append(f"  Turn {turn['turn']}: CONTENT    \"{preview}\"{reasoning_marker}")
 
         if self.errors:
             lines.append(f"\n  ERRORS ({len(self.errors)}):")
@@ -241,12 +244,17 @@ def run_agentic_workflow(
         assistant_msg = choice["message"]
         tool_calls = assistant_msg.get("tool_calls")
 
+        reasoning_content = assistant_msg.get("reasoning_content")
+
         if tool_calls:
-            messages.append({
+            assistant_history_msg: Dict[str, Any] = {
                 "role": "assistant",
                 "content": assistant_msg.get("content"),
                 "tool_calls": tool_calls,
-            })
+            }
+            if reasoning_content is not None:
+                assistant_history_msg["reasoning_content"] = reasoning_content
+            messages.append(assistant_history_msg)
 
             for tool_call in tool_calls:
                 tool_name = tool_call["function"]["name"]
@@ -278,6 +286,7 @@ def run_agentic_workflow(
                     "tool_name": tool_name,
                     "arguments": arguments,
                     "mock_response": mock_response,
+                    "reasoning_content": reasoning_content,
                 })
         else:
             content = assistant_msg.get("content", "")
@@ -289,11 +298,15 @@ def run_agentic_workflow(
             result.turns.append({
                 "turn": turn_count,
                 "content": content,
+                "reasoning_content": reasoning_content,
             })
-            messages.append({
+            assistant_history_msg = {
                 "role": "assistant",
                 "content": content,
-            })
+            }
+            if reasoning_content is not None:
+                assistant_history_msg["reasoning_content"] = reasoning_content
+            messages.append(assistant_history_msg)
 
             if prompt_idx < len(user_prompts):
                 messages.append({"role": "user", "content": user_prompts[prompt_idx]})
@@ -387,6 +400,7 @@ def _apply_template_override(server: ServerProcess, template_override: Any) -> N
     ("mradermacher/Hermes-3-Llama-3.1-8B-GGUF:Q4_K_M",        ("NousResearch/Hermes-3-Llama-3.1-8B", "tool_use")),
     ("bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF:Q4_K_M",     None),
     ("bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M",           ("meta-llama/Llama-3.2-3B-Instruct", None)),
+    ("bartowski/arcee-ai_Trinity-Mini-GGUF:Q4_K_M",            None),
 ], ids=[
     "Qwen2.5-7B",
     "Llama-3.1-8B",
@@ -394,11 +408,13 @@ def _apply_template_override(server: ServerProcess, template_override: Any) -> N
     "Hermes-3-8B",
     "DeepSeek-R1-Distill-7B",
     "Llama-3.2-3B",
+    "Trinity-Mini-26B",
 ])
 def test_agentic_workflow_real_model(hf_repo: str, template_override: Any):
     """Full multi-turn agentic workflow with real models"""
     global server
     server.jinja = True
+    server.offline = False
     server.n_ctx = 8192
     server.n_predict = 1024
     server.model_hf_repo = hf_repo
@@ -421,6 +437,7 @@ def test_agentic_workflow_streamed_real_model(hf_repo: str, template_override: A
     """Same workflow but with streaming, to test streamed tool call parsing across turns"""
     global server
     server.jinja = True
+    server.offline = False
     server.n_ctx = 8192
     server.n_predict = 1024
     server.model_hf_repo = hf_repo
