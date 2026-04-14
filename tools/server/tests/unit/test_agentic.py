@@ -330,10 +330,25 @@ def do_test_agentic_workflow(server: ServerProcess, model_id: str, **kwargs: Any
     result.assert_ok(min_turns=3, min_tool_calls=1, valid_names=TOOL_NAMES)
 
 
+def make_qwen3_5_08b() -> ServerProcess:
+    server = ServerProcess()
+    server.offline = False
+    server.model_hf_repo = "bartowski/Qwen_Qwen3.5-0.8B-GGUF"
+    server.model_hf_file = None
+    server.model_alias = "qwen3.5-0.8b"
+    server.n_ctx = 8192
+    server.n_batch = 2048
+    server.n_slots = 1
+    server.n_predict = 1024
+    server.temperature = 0.0
+    server.seed = 42
+    return server
+
+
 @pytest.fixture(autouse=True)
 def create_server():
     global server
-    server = ServerPreset.qwen3_5_08b()
+    server = make_qwen3_5_08b()
     server.server_port = 8082
 
 

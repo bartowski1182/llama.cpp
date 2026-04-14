@@ -554,21 +554,6 @@ class ServerPreset:
         return server
 
     @staticmethod
-    def qwen3_5_08b() -> ServerProcess:
-        server = ServerProcess()
-        server.offline = True # will be downloaded by load_all()
-        server.model_hf_repo = "bartowski/Qwen_Qwen3.5-0.8B-GGUF"
-        server.model_hf_file = None
-        server.model_alias = "qwen3.5-0.8b"
-        server.n_ctx = 8192
-        server.n_batch = 2048
-        server.n_slots = 1
-        server.n_predict = 1024
-        server.temperature = 0.0
-        server.seed = 42
-        return server
-
-    @staticmethod
     def tinygemma3() -> ServerProcess:
         server = ServerProcess()
         server.offline = True # will be downloaded by load_all()
