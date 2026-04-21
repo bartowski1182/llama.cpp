@@ -289,8 +289,11 @@ void quantize_row_q8_1_ref(const float * GGML_RESTRICT x, block_q8_1 * GGML_REST
         }
 
         // clamp to fp16 range to avoid overflow when used in Q4_1/Q5_1 dot products
-        const float s_val = sum*d;
-        y[i].s = GGML_FP32_TO_FP16(fminf(65504.0f, fmaxf(-65504.0f, s_val)));
+        {
+            float s_val = sum * d;
+            s_val = fminf(65504.0f, fmaxf(-65504.0f, s_val))
+            y[i].s = GGML_FP32_TO_FP16(s_val);
+        }
     }
 }
 
