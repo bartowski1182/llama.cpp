@@ -44,8 +44,10 @@ static __global__ void quantize_q8_1(
         return;
     }
 
-    // clamp sum to fp16 range to avoid overflow when used in Q4_1/Q5_1 dot products
-    y[ib].ds = make_half2(d, fminf(65504.0f, fmaxf(-65504.0f, sum)));
+    // clamp d and sum to f16 range to avoid inf from large activations
+    const float d_clamped   = fminf(d, 65504.0f);
+    const float sum_clamped = fminf(fmaxf(sum, -65504.0f), 65504.0f);
+    y[ib].ds = make_half2(d_clamped, sum_clamped);
 }
 
 __device__ __forceinline__ uint8_t compute_e8m0_scale(float amax) {
@@ -265,8 +267,10 @@ static __global__ void quantize_mmq_q8_1(
     const float d = 1.0f / d_inv;
 
     if (ds_layout == MMQ_Q8_1_DS_LAYOUT_DS4) {
-        // clamp sum to fp16 range to avoid overflow when used in Q4_1/Q5_1 dot products
-        y[ib].ds4[iqs/32] = make_half2(d, fminf(65504.0f, fmaxf(-65504.0f, sum)));
+        // clamp d and sum to f16 range to avoid inf from large activations
+        const float d_clamped   = fminf(d, 65504.0f);
+        const float sum_clamped = fminf(fmaxf(sum, -65504.0f), 65504.0f);
+        y[ib].ds4[iqs/32] = make_half2(d_clamped, sum_clamped);
     } else {
         y[ib].d4[iqs/32]  = d;
     }
