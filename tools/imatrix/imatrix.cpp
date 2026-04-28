@@ -1071,6 +1071,7 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
+    // set_params before show_statistics so load_imatrix has valid n_ctx/n_parallel
     g_collector.set_params(params);
 
     if (params.show_statistics) {

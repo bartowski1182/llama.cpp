@@ -183,6 +183,11 @@ static int load_imatrix(const std::string & imatrix_file, std::vector<std::strin
         exit(1);
     }
 
+    if (!loaded.is_legacy && !loaded.has_metadata) {
+        fprintf(stderr, "%s: missing imatrix metadata in file %s\n", __func__, imatrix_file.c_str());
+        exit(1);
+    }
+
     for (const auto & [name, entry] : loaded.entries) {
         auto & e = imatrix_data[name];
         e.resize(entry.sums.size());
@@ -204,6 +209,18 @@ static int load_imatrix(const std::string & imatrix_file, std::vector<std::strin
                     }
                 }
             }
+
+            if (getenv("LLAMA_TRACE")) {
+                float max_count = 0.0f;
+                for (int64_t j = 0; j < ncounts; ++j) {
+                    const float count = (float) entry.counts[j];
+                    if (count > max_count) {
+                        max_count = count;
+                    }
+                }
+                printf("%s: loaded data (size = %6d, n_tokens = %6d, n_chunks = %6d) for '%s'\n",
+                       __func__, int(e.size()), int(max_count), int(max_count / loaded.chunk_size), name.c_str());
+            }
         } else {
             // Legacy format: sums contain (raw/count)*ncall, divide by ncall
             const int64_t ncall = entry.counts.empty() ? 0 : entry.counts[0];
@@ -215,6 +232,11 @@ static int load_imatrix(const std::string & imatrix_file, std::vector<std::strin
                 for (size_t i = 0; i < entry.sums.size(); ++i) {
                     e[i] = entry.sums[i];
                 }
+            }
+
+            if (getenv("LLAMA_TRACE")) {
+                printf("%s: loaded data (size = %6d, ncall = %6d) for '%s'\n",
+                       __func__, int(e.size()), int(ncall), name.c_str());
             }
         }
     }
