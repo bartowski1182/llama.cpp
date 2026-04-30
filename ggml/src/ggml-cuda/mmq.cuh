@@ -982,7 +982,8 @@ static __device__ __forceinline__ void vec_dot_q8_0_q8_1_mma(
             if (ds_layout == MMQ_Q8_1_DS_LAYOUT_D4) {
                 dB = y_df[j*MMQ_TILE_Y_K + k01/QI8_1];
             } else {
-                dB = __low2float(y_ds[j*MMQ_TILE_Y_K + k01/QI8_1]);
+                // DS4 layout: ds slot holds bf16 bits (see quantize.cu); decode as bf16.
+                dB = ggml_cuda_q8_1_ds_unpack(y_ds[j*MMQ_TILE_Y_K + k01/QI8_1]).x;
             }
 
 #pragma unroll
@@ -1057,9 +1058,10 @@ static __device__ __forceinline__ void vec_dot_q8_0_q8_1_mma(
                 const int j = j0 + tile_C::get_j(l);
 
                 if (ds_layout == MMQ_Q8_1_DS_LAYOUT_D4) {
-                    dB[l] =             y_df[j*MMQ_TILE_Y_K + k01/QI8_1];
+                    dB[l] = y_df[j*MMQ_TILE_Y_K + k01/QI8_1];
                 } else {
-                    dB[l] = __low2float(y_ds[j*MMQ_TILE_Y_K + k01/QI8_1]);
+                    // DS4 layout: ds slot holds bf16 bits (see quantize.cu); decode as bf16.
+                    dB[l] = ggml_cuda_q8_1_ds_unpack(y_ds[j*MMQ_TILE_Y_K + k01/QI8_1]).x;
                 }
             }
 
@@ -1219,7 +1221,8 @@ static __device__ __forceinline__ void vec_dot_q8_1_q8_1_mma(
             load_generic(B, y_qs + j0*MMQ_TILE_Y_K + k01, MMQ_TILE_Y_K);
 
             const int j = j0 + tile_C::get_j(0);
-            const float2 dsB = __half22float2(y_dm[j*MMQ_TILE_Y_K + k01/QI8_1]);
+            // DS4 layout: y_dm holds bf16 bits (see quantize.cu); decode as bf16.
+            const float2 dsB = ggml_cuda_q8_1_ds_unpack(y_dm[j*MMQ_TILE_Y_K + k01/QI8_1]);
 
 #pragma unroll
             for (int n = 0; n < ntx; ++n) {
@@ -1292,7 +1295,8 @@ static __device__ __forceinline__ void vec_dot_q8_1_q8_1_mma(
             for (int l = 0; l < tile_C::ne/2; ++l) {
                 const int j = j0 + tile_C::get_j(l);
 
-                dsB[l] = __half22float2(y_dm[j*MMQ_TILE_Y_K + k01/QI8_1]);
+                // DS4 layout: y_dm holds bf16 bits (see quantize.cu); decode as bf16.
+                dsB[l] = ggml_cuda_q8_1_ds_unpack(y_dm[j*MMQ_TILE_Y_K + k01/QI8_1]);
             }
 
 #pragma unroll

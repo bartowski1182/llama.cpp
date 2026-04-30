@@ -4,6 +4,22 @@
 
 #include <cstdint>
 
+// block_q8_1.ds (and the DS4 layout in block_q8_1_mmq) holds bf16 bits stuffed into the
+// half2 slot (see quantize.cu) to preserve full fp32 dynamic range against activation
+// outliers. Decode the half2 as bf16 to recover the fp32 (d, s) pair.
+static __device__ __forceinline__ float2 ggml_cuda_q8_1_ds_unpack(const half2 ds) {
+    const nv_bfloat162 ds_bf = *reinterpret_cast<const nv_bfloat162 *>(&ds);
+#if defined(GGML_USE_HIP)
+    return make_float2(__bfloat162float(__low2bfloat16(ds_bf)), __bfloat162float(__high2bfloat16(ds_bf)));
+#else
+#if __CUDA_ARCH__ >= 800
+    return __bfloat1622float2(ds_bf);
+#else
+    return make_float2(__bfloat162float(ds_bf.x), __bfloat162float(ds_bf.y));
+#endif
+#endif
+}
+
 static __device__ __forceinline__ int get_int_b1(const void * x, const int & i32) {
     const uint8_t * x8 = (const uint8_t *) x;
 
@@ -124,7 +140,7 @@ template <int vdr> static __device__ __forceinline__ float vec_dot_q4_0_q8_1_imp
         sumi = ggml_cuda_dp4a(vi1, u[2*i+1], sumi);
     }
 
-    const float2 ds8f = __half22float2(ds8);
+    const float2 ds8f = ggml_cuda_q8_1_ds_unpack(ds8);
 
     // second part effectively subtracts 8 from each quant value
     return d4 * (sumi * ds8f.x - (8*vdr/QI4_0) * ds8f.y);
@@ -148,16 +164,11 @@ template <int vdr> static __device__ __forceinline__ float vec_dot_q4_1_q8_1_imp
         sumi = ggml_cuda_dp4a(vi1, u[2*i+1], sumi);
     }
 
-#ifdef FAST_FP16_AVAILABLE
-    const float2 tmp = __half22float2(__hmul2(dm4, ds8));
-    const float d4d8 = tmp.x;
-    const float m4s8 = tmp.y;
-#else
+    // dm4 is fp16 (q4_1 weights), ds8 holds bf16 bits (q8_1 activations); decode separately.
     const float2 dm4f = __half22float2(dm4);
-    const float2 ds8f = __half22float2(ds8);
+    const float2 ds8f = ggml_cuda_q8_1_ds_unpack(ds8);
     const float d4d8 = dm4f.x * ds8f.x;
     const float m4s8 = dm4f.y * ds8f.y;
-#endif // FAST_FP16_AVAILABLE
 
     // scale second part of sum by QI8_1/(vdr * QR4_1) to compensate for multiple threads adding it
     return sumi * d4d8 + m4s8 / (QI8_1 / (vdr * QR4_1));
@@ -188,7 +199,7 @@ template <int vdr> static __device__ __forceinline__ float vec_dot_q5_0_q8_1_imp
         sumi = ggml_cuda_dp4a(vi1, u[2*i+1], sumi); // SIMD dot product of quantized values
     }
 
-    const float2 ds8f = __half22float2(ds8);
+    const float2 ds8f = ggml_cuda_q8_1_ds_unpack(ds8);
 
     // second part effectively subtracts 16 from each quant value
     return d5 * (sumi * ds8f.x - (16*vdr/QI5_0) * ds8f.y);
@@ -219,16 +230,11 @@ template <int vdr> static __device__ __forceinline__ float vec_dot_q5_1_q8_1_imp
         sumi = ggml_cuda_dp4a(vi1, u[2*i+1], sumi); // SIMD dot product of quantized values
     }
 
-#ifdef FAST_FP16_AVAILABLE
-    const float2 tmp = __half22float2(__hmul2(dm5, ds8));
-    const float d5d8 = tmp.x;
-    const float m5s8 = tmp.y;
-#else
+    // dm5 is fp16 (q5_1 weights), ds8 holds bf16 bits (q8_1 activations); decode separately.
     const float2 dm5f = __half22float2(dm5);
-    const float2 ds8f = __half22float2(ds8);
+    const float2 ds8f = ggml_cuda_q8_1_ds_unpack(ds8);
     const float d5d8 = dm5f.x * ds8f.x;
     const float m5s8 = dm5f.y * ds8f.y;
-#endif // FAST_FP16_AVAILABLE
 
     // scale second part of sum by QI5_1 / vdr to compensate for multiple threads adding it
     return sumi*d5d8 + m5s8 / (QI5_1 / vdr);
@@ -262,16 +268,11 @@ template <int vdr> static __device__ __forceinline__ float vec_dot_q8_1_q8_1_imp
         sumi = ggml_cuda_dp4a(v[i], u[i], sumi);
     }
 
-#ifdef FAST_FP16_AVAILABLE
-    const float2 tmp = __half22float2(__hmul2(dm8, ds8));
-    const float d8d8 = tmp.x;
-    const float m8s8 = tmp.y;
-#else
+    // dm8 is fp16 (x-side weight d/m), ds8 holds bf16 bits (q8_1 activations); decode separately.
     const float2 dm8f = __half22float2(dm8);
-    const float2 ds8f = __half22float2(ds8);
+    const float2 ds8f = ggml_cuda_q8_1_ds_unpack(ds8);
     const float d8d8 = dm8f.x * ds8f.x;
     const float m8s8 = dm8f.y * ds8f.y;
-#endif // FAST_FP16_AVAILABLE
 
     // scale second part of sum by QI8_1/ vdr to compensate for multiple threads adding it
     return sumi*d8d8 + m8s8 / (QI8_1 / vdr);
@@ -318,7 +319,7 @@ static __device__ __forceinline__ float vec_dot_mxfp4_q8_1(
         sumi = ggml_cuda_dp4a(v.y, q8[l + 4], sumi);
     }
 
-    const float d = ggml_cuda_e8m0_to_fp32(bq4->e) * 0.5f * __low2float(bq8_1->ds);
+    const float d = ggml_cuda_e8m0_to_fp32(bq4->e) * 0.5f * ggml_cuda_q8_1_ds_unpack(bq8_1->ds).x;
     return d * sumi;
 }
 
@@ -348,7 +349,7 @@ static __device__ __forceinline__ float vec_dot_nvfp4_q8_1(
         sumi = ggml_cuda_dp4a(v1.x, get_int_b4(bq8->qs, i8 + 1), sumi);
         sumi = ggml_cuda_dp4a(v1.y, get_int_b4(bq8->qs, i8 + 3), sumi);
 
-        const float d = ggml_cuda_ue4m3_to_fp32(bq4->d[is]) * __low2float(bq8->ds);
+        const float d = ggml_cuda_ue4m3_to_fp32(bq4->d[is]) * ggml_cuda_q8_1_ds_unpack(bq8->ds).x;
         sum += d * float(sumi);
     }
 
@@ -540,7 +541,8 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1_impl_mmq(
             sumi_d = ggml_cuda_dp4a((v[j] >> (4*i)) & 0x0F0F0F0F, u[i*QI8_1 + j], sumi_d); // SIMD dot product
         }
 
-        const float2 ds8f = __half22float2(ds8[i]);
+        // ds8[i] holds bf16 bits (see quantize.cu DS4 path); decode as bf16 to recover (d, s).
+        const float2 ds8f = ggml_cuda_q8_1_ds_unpack(ds8[i]);
 
         sumf_d += ds8f.x * (sc[i] * sumi_d);
         sumf_m += ds8f.y *   m[i]; // sum of q8_1 block * q4_K min val
@@ -603,7 +605,8 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1_impl_mmq(
             sumi_d = ggml_cuda_dp4a(v[i*QI8_1 + j], u[i*QI8_1 + j], sumi_d); // SIMD dot product
         }
 
-        const float2 ds8f = __half22float2(ds8[i]);
+        // ds8[i] holds bf16 bits (see quantize.cu DS4 path); decode as bf16 to recover (d, s).
+        const float2 ds8f = ggml_cuda_q8_1_ds_unpack(ds8[i]);
 
         sumf_d += ds8f.x * (sc[i] * sumi_d);
         sumf_m += ds8f.y *   m[i]; // sum of q8_1 block * q4_K min val
@@ -760,7 +763,7 @@ static __device__ __forceinline__ float vec_dot_q8_0_q8_1(
         u[i] = get_int_b4(bq8_1->qs, iqs + i);
     }
 
-    return vec_dot_q8_0_q8_1_impl<float, VDR_Q8_0_Q8_1_MMVQ>(v, u, bq8_0->d, __low2half(bq8_1->ds));
+    return vec_dot_q8_0_q8_1_impl<float, VDR_Q8_0_Q8_1_MMVQ>(v, u, bq8_0->d, ggml_cuda_q8_1_ds_unpack(bq8_1->ds).x);
 }
 
 static __device__ __forceinline__ float vec_dot_q2_K_q8_1(
@@ -780,7 +783,7 @@ static __device__ __forceinline__ float vec_dot_q2_K_q8_1(
 #pragma unroll
     for (int i = 0; i < QR2_K; ++ i) {
         u[i]  = get_int_b4(bq8_1[bq8_offset + i].qs, iqs % QI8_1);
-        d8[i] = __low2float(bq8_1[bq8_offset + i].ds);
+        d8[i] = ggml_cuda_q8_1_ds_unpack(bq8_1[bq8_offset + i].ds).x;
     }
 
     return vec_dot_q2_K_q8_1_impl_mmvq(v, u, scales, bq2_K->dm, d8);
@@ -807,7 +810,7 @@ static __device__ __forceinline__ float vec_dot_q3_K_q8_1(
 #pragma unroll
     for (int i = 0; i < QR3_K; ++i) {
         u[i]  = get_int_b4(bq8_1[bq8_offset + i].qs, iqs % QI8_1);
-        d8[i] = __low2float(bq8_1[bq8_offset + i].ds);
+        d8[i] = ggml_cuda_q8_1_ds_unpack(bq8_1[bq8_offset + i].ds).x;
     }
 
     return vec_dot_q3_K_q8_1_impl_mmvq(vl, vh, u, bq3_K->scales, scale_offset, d, d8);
@@ -849,7 +852,7 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1(
 
     for (int i = 0; i < QR4_K; ++i) {
         const block_q8_1 * bq8i = bq8_1 + bq8_offset + i;
-        d8[i] = __low2float(bq8i->ds);
+        d8[i] = ggml_cuda_q8_1_ds_unpack(bq8i->ds).x;
 
         const int * q8 = (const int *)bq8i->qs + ((iqs/2)%4);
         u[2*i+0] = q8[0];
@@ -895,7 +898,7 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1(
 #pragma unroll
     for (int i = 0; i < QR5_K; ++i) {
         const block_q8_1 * bq8i = bq8_1 + bq8_offset + i;
-        d8[i] = __low2float(bq8i->ds);
+        d8[i] = ggml_cuda_q8_1_ds_unpack(bq8i->ds).x;
 
         const int * q8 = (const int *)bq8i->qs + ((iqs/2)%4);
         u[2*i+0] = q8[0];
@@ -925,7 +928,7 @@ static __device__ __forceinline__ float vec_dot_q6_K_q8_1(
 #pragma unroll
     for (int i = 0; i < QR6_K; ++i) {
         u[i]  = get_int_b4(bq8_1[bq8_offset + 2*i].qs, iqs % QI8_1);
-        d8[i] = __low2float(bq8_1[bq8_offset + 2*i].ds);
+        d8[i] = ggml_cuda_q8_1_ds_unpack(bq8_1[bq8_offset + 2*i].ds).x;
     }
 
     return vec_dot_q6_K_q8_1_impl_mmvq(vl, vh, u, scales, bq6_K->d, d8);
@@ -962,7 +965,7 @@ static __device__ __forceinline__ float vec_dot_iq2_xxs_q8_1(
 
     const int ls = aux32 >> 27 | 1; // (scale * 2 + 1)
     sumi = sumi * ls / 8;           // (sumi * scale + sumi / 2) / 4
-    const float d = __half2float(bq2->d) * __low2float(bq8_1[iqs/2].ds);
+    const float d = __half2float(bq2->d) * ggml_cuda_q8_1_ds_unpack(bq8_1[iqs/2].ds).x;
     return d * sumi;
 }
 
@@ -1003,7 +1006,7 @@ static __device__ __forceinline__ float vec_dot_iq2_xs_q8_1(
         }
     }
     const int sumi = (sumi0*ls0 + sumi1*ls1 + (sumi0 + sumi1)/2)/4;
-    const float d = __half2float(bq2->d) * __low2float(bq8_1[iqs/2].ds);
+    const float d = __half2float(bq2->d) * ggml_cuda_q8_1_ds_unpack(bq8_1[iqs/2].ds).x;
     return d * sumi;
 }
 
@@ -1051,7 +1054,7 @@ static __device__ __forceinline__ float vec_dot_iq2_s_q8_1(
     }
     const int sumi = (sumi0*ls0 + sumi1*ls1 + (sumi0 + sumi1)/2)/4;
 
-    const float d = __half2float(bq2->d) * __low2float(bq8_1[iqs/2].ds);
+    const float d = __half2float(bq2->d) * ggml_cuda_q8_1_ds_unpack(bq8_1[iqs/2].ds).x;
     return d * sumi;
 }
 
@@ -1089,7 +1092,7 @@ static __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(
 
     const int ls = aux32 >> 28;
     sumi = (ls*sumi + sumi/2)/2;
-    const float d = __half2float(bq3->d) * __low2float(bq8_1[iqs/2].ds);
+    const float d = __half2float(bq3->d) * ggml_cuda_q8_1_ds_unpack(bq8_1[iqs/2].ds).x;
     return d * sumi;
 }
 
@@ -1132,7 +1135,7 @@ static __device__ __forceinline__ float vec_dot_iq3_s_q8_1(
 
     sumi *= 1 + 2*((bq3->scales[iqs/4] >> ((iqs << 1) & 0x04)) & 0x0F);
 
-    const float d = __half2float(bq3->d) * __low2float(bq8_1[iqs/2].ds);
+    const float d = __half2float(bq3->d) * ggml_cuda_q8_1_ds_unpack(bq8_1[iqs/2].ds).x;
     return d * sumi;
 }
 
@@ -1165,7 +1168,7 @@ static __device__ __forceinline__ float vec_dot_iq1_s_q8_1(
 
     const float  d1q   = __half2float(bq1->d) * (((qh >> 11) & 0x0E) + 1);
     const float  delta = -1.0f + IQ1S_DELTA - (qh & 0x8000) * (2.0f*IQ1S_DELTA/0x8000);
-    const float2 ds    = __half22float2(bq8_1[iqs].ds);
+    const float2 ds    = ggml_cuda_q8_1_ds_unpack(bq8_1[iqs].ds);
     return d1q * (ds.x*sumi + ds.y*delta);
 }
 
@@ -1208,7 +1211,7 @@ static __device__ __forceinline__ float vec_dot_iq1_m_q8_1(
 
     iq1m_scale_t scale;
     scale.u16 = (sc[0] >> 12) | ((sc[1] >> 8) & 0x00F0) | ((sc[2] >> 4) & 0x0F00) | (sc[3] & 0xF000);
-    const float d = __half2float(scale.f16) * __low2float(bq8_1[iqs].ds);
+    const float d = __half2float(scale.f16) * ggml_cuda_q8_1_ds_unpack(bq8_1[iqs].ds).x;
 
     const int tmp = sc[iqs/2] >> (6*(iqs%2));
     const int sc0 = 2*((tmp >> 0) & 0x07) + 1;
@@ -1236,7 +1239,7 @@ static __device__ __forceinline__ float vec_dot_iq4_nl_q8_1(
         sumi = ggml_cuda_dp4a(v.y, q8[l + 4], sumi);
     }
 
-    const float d = __half2float(bq4->d) * __low2float(bq8_1->ds);
+    const float d = __half2float(bq4->d) * ggml_cuda_q8_1_ds_unpack(bq8_1->ds).x;
     return d * sumi;
 }
 
@@ -1264,6 +1267,6 @@ static __device__ __forceinline__ float vec_dot_iq4_xs_q8_1(
     const int ls = ((bq4->scales_l[iqs/8] >> (iqs & 0x04)) & 0x0F) | (((bq4->scales_h >> (iqs/2)) & 0x03) << 4);
     sumi *= ls - 32;
 
-    const float d = __half2float(bq4->d) * __low2float(bq8_1[iqs/4].ds);
+    const float d = __half2float(bq4->d) * ggml_cuda_q8_1_ds_unpack(bq8_1[iqs/4].ds).x;
     return d * sumi;
 }
