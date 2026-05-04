@@ -23,7 +23,7 @@ static __global__ void quantize_q8_1(
 
     const int64_t i_cont = ((i3*ne2.z + i2) * ne1 + i1) * ne0 + i0;
 
-    block_q8_1 * y = (block_q8_1 *) vy;
+    block_q8_1_bf16 * y = (block_q8_1_bf16 *) vy;
 
     const int64_t ib  = i_cont / QK8_1; // block index
     const int64_t iqs = i_cont % QK8_1; // quant index
@@ -44,10 +44,7 @@ static __global__ void quantize_q8_1(
         return;
     }
 
-    // Store d and sum as bf16 in the half2 slot to preserve full fp32 range
-    // (avoids overflow when used in Q4_1/Q5_1/Q4_K/Q5_K dot products with large activations).
-    const nv_bfloat162 ds_bf16{__float2bfloat16(d), __float2bfloat16(sum)};
-    y[ib].ds = *reinterpret_cast<const half2 *>(&ds_bf16);
+    y[ib].ds = nv_bfloat162{ __float2bfloat16(d), __float2bfloat16(sum) };
 }
 
 __device__ __forceinline__ uint8_t compute_e8m0_scale(float amax) {
@@ -201,7 +198,7 @@ static __global__ void quantize_mmq_q8_1(
 
     const float4 * x4 = (const float4 *) x;
 
-    block_q8_1_mmq * y = (block_q8_1_mmq *) vy;
+    block_q8_1_mmq_bf16 * y = (block_q8_1_mmq_bf16 *) vy;
 
     const int64_t ib0 = blockIdx.z*((int64_t)gridDim.x*gridDim.y*blockDim.x/QK8_1); // first block of channel
     const int64_t ib  = ib0 + (i0 / (4*QK8_1))*ne1 + blockIdx.x;                    // block index in channel
@@ -247,7 +244,7 @@ static __global__ void quantize_mmq_q8_1(
             return;
         }
 
-        y[ib].d2s6[2 + iqs/16] = sum;
+        y[ib].u.d2s6[2 + iqs / 16] = sum;
 
         if (iqs % 64 != 0) {
             return;
@@ -255,7 +252,7 @@ static __global__ void quantize_mmq_q8_1(
 
         const float d = 1.0f / d_inv;
 
-        y[ib].d2s6[iqs/64] = d;
+        y[ib].u.d2s6[iqs / 64] = d;
 
         return;
     }
@@ -267,12 +264,9 @@ static __global__ void quantize_mmq_q8_1(
     const float d = 1.0f / d_inv;
 
     if (ds_layout == MMQ_Q8_1_DS_LAYOUT_DS4) {
-        // Store d and sum as bf16 in the half2 slot to preserve full fp32 range
-        // (avoids overflow when used in Q4_1/Q5_1/Q4_K/Q5_K dot products with large activations).
-        const nv_bfloat162 ds_bf16{__float2bfloat16(d), __float2bfloat16(sum)};
-        y[ib].ds4[iqs/32] = *reinterpret_cast<const half2 *>(&ds_bf16);
+        y[ib].u.ds4[iqs / 32] = nv_bfloat162{ __float2bfloat16(d), __float2bfloat16(sum) };
     } else {
-        y[ib].d4[iqs/32]  = d;
+        y[ib].u.d4[iqs / 32] = d;
     }
 }
 
