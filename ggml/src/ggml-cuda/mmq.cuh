@@ -1214,7 +1214,7 @@ static __device__ __forceinline__ void vec_dot_q8_0_q8_1_mma(
             if (ds_layout == MMQ_Q8_1_DS_LAYOUT_D4) {
                 dB = y_df[j*MMQ_TILE_Y_K + k01/QI8_1];
             } else {
-                dB = ggml_cuda_bf162_to_float2(y_ds[j * MMQ_TILE_Y_K + k01 / QI8_1]).x;
+                dB = ggml_cuda_cast<float2>(y_ds[j * MMQ_TILE_Y_K + k01 / QI8_1]).x;
             }
 
 #pragma unroll
@@ -1291,7 +1291,7 @@ static __device__ __forceinline__ void vec_dot_q8_0_q8_1_mma(
                 if (ds_layout == MMQ_Q8_1_DS_LAYOUT_D4) {
                     dB[l] = y_df[j*MMQ_TILE_Y_K + k01/QI8_1];
                 } else {
-                    dB[l] = ggml_cuda_bf162_to_float2(y_ds[j * MMQ_TILE_Y_K + k01 / QI8_1]).x;
+                    dB[l] = ggml_cuda_cast<float2>(y_ds[j * MMQ_TILE_Y_K + k01 / QI8_1]).x;
                 }
             }
 
@@ -1380,7 +1380,7 @@ static __device__ __forceinline__ void vec_dot_q8_1_q8_1_mma(
             load_ldmatrix(B, y_qs + j0*MMQ_TILE_Y_K + k01, MMQ_TILE_Y_K);
 
             const int j = j0 + tile_C::get_j(0);
-            const float2 dsB = ggml_cuda_bf162_to_float2(y_dm[j * MMQ_TILE_Y_K + k01 / QI8_1]);
+            const float2 dsB = ggml_cuda_cast<float2>(y_dm[j * MMQ_TILE_Y_K + k01 / QI8_1]);
 
 #pragma unroll
             for (int n = 0; n < ntx; ++n) {
@@ -1453,7 +1453,7 @@ static __device__ __forceinline__ void vec_dot_q8_1_q8_1_mma(
             for (int l = 0; l < tile_C::ne/2; ++l) {
                 const int j = j0 + tile_C::get_j(l);
 
-                dsB[l] = ggml_cuda_bf162_to_float2(y_dm[j * MMQ_TILE_Y_K + k01 / QI8_1]);
+                dsB[l] = ggml_cuda_cast<float2>(y_dm[j * MMQ_TILE_Y_K + k01 / QI8_1]);
             }
 
 #pragma unroll

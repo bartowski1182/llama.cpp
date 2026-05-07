@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.cuh"
+#include "convert.cuh"
 
 #include <cstdint>
 
@@ -129,7 +130,7 @@ static __device__ __forceinline__ float vec_dot_q4_0_q8_1_impl(const int *      
         sumi = ggml_cuda_dp4a(vi1, u[2*i+1], sumi);
     }
 
-    const float2 ds8f = ggml_cuda_bf162_to_float2(ds8);
+    const float2 ds8f = ggml_cuda_cast<float2>(ds8);
 
     // second part effectively subtracts 8 from each quant value
     return d4 * (sumi * ds8f.x - (8*vdr/QI4_0) * ds8f.y);
@@ -156,7 +157,7 @@ static __device__ __forceinline__ float vec_dot_q4_1_q8_1_impl(const int *      
     }
 
     const float2 dm4f = __half22float2(dm4);
-    const float2 ds8f = ggml_cuda_bf162_to_float2(ds8);
+    const float2 ds8f = ggml_cuda_cast<float2>(ds8);
     const float d4d8 = dm4f.x * ds8f.x;
     const float m4s8 = dm4f.y * ds8f.y;
 
@@ -192,7 +193,7 @@ static __device__ __forceinline__ float vec_dot_q5_0_q8_1_impl(const int *      
         sumi = ggml_cuda_dp4a(vi1, u[2*i+1], sumi); // SIMD dot product of quantized values
     }
 
-    const float2 ds8f = ggml_cuda_bf162_to_float2(ds8);
+    const float2 ds8f = ggml_cuda_cast<float2>(ds8);
 
     // second part effectively subtracts 16 from each quant value
     return d5 * (sumi * ds8f.x - (16*vdr/QI5_0) * ds8f.y);
@@ -227,7 +228,7 @@ static __device__ __forceinline__ float vec_dot_q5_1_q8_1_impl(const int *      
     }
 
     const float2 dm5f = __half22float2(dm5);
-    const float2 ds8f = ggml_cuda_bf162_to_float2(ds8);
+    const float2 ds8f = ggml_cuda_cast<float2>(ds8);
     const float d5d8 = dm5f.x * ds8f.x;
     const float m5s8 = dm5f.y * ds8f.y;
 
@@ -266,7 +267,7 @@ static __device__ __forceinline__ float vec_dot_q8_1_q8_1_impl(const int *      
     }
 
     const float2 dm8f = __half22float2(dm8);
-    const float2 ds8f = ggml_cuda_bf162_to_float2(ds8);
+    const float2 ds8f = ggml_cuda_cast<float2>(ds8);
     const float d8d8 = dm8f.x * ds8f.x;
     const float m8s8 = dm8f.y * ds8f.y;
 
@@ -316,7 +317,7 @@ static __device__ __forceinline__ float vec_dot_mxfp4_q8_1(const void * __restri
         sumi = ggml_cuda_dp4a(v.y, q8[l + 4], sumi);
     }
 
-    const float d = ggml_cuda_e8m0_to_fp32(bq4->e) * 0.5f * ggml_cuda_bf162_to_float2(bq8_1->ds).x;
+    const float d = ggml_cuda_e8m0_to_fp32(bq4->e) * 0.5f * ggml_cuda_cast<float2>(bq8_1->ds).x;
     return d * sumi;
 }
 
@@ -344,7 +345,7 @@ static __device__ __forceinline__ float vec_dot_nvfp4_q8_1(const void * __restri
         sumi = ggml_cuda_dp4a(v1.x, get_int_b4(bq8->qs, i8 + 1), sumi);
         sumi = ggml_cuda_dp4a(v1.y, get_int_b4(bq8->qs, i8 + 3), sumi);
 
-        const float d = ggml_cuda_ue4m3_to_fp32(bq4->d[is]) * ggml_cuda_bf162_to_float2(bq8->ds).x;
+        const float d = ggml_cuda_ue4m3_to_fp32(bq4->d[is]) * ggml_cuda_cast<float2>(bq8->ds).x;
         sum += d * float(sumi);
     }
 
@@ -538,7 +539,7 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1_impl_mmq(const int * _
             sumi_d = ggml_cuda_dp4a((v[j] >> (4*i)) & 0x0F0F0F0F, u[i*QI8_1 + j], sumi_d); // SIMD dot product
         }
 
-        const float2 ds8f = ggml_cuda_bf162_to_float2(ds8[i]);
+        const float2 ds8f = ggml_cuda_cast<float2>(ds8[i]);
 
         sumf_d += ds8f.x * (sc[i] * sumi_d);
         sumf_m += ds8f.y *   m[i]; // sum of q8_1 block * q4_K min val
@@ -603,7 +604,7 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1_impl_mmq(const int * _
             sumi_d = ggml_cuda_dp4a(v[i*QI8_1 + j], u[i*QI8_1 + j], sumi_d); // SIMD dot product
         }
 
-        const float2 ds8f = ggml_cuda_bf162_to_float2(ds8[i]);
+        const float2 ds8f = ggml_cuda_cast<float2>(ds8[i]);
 
         sumf_d += ds8f.x * (sc[i] * sumi_d);
         sumf_m += ds8f.y *   m[i]; // sum of q8_1 block * q4_K min val
@@ -809,7 +810,7 @@ static __device__ __forceinline__ float vec_dot_q8_0_q8_1(const void * __restric
         u[i] = get_int_b4(bq8_1->qs, iqs + i);
     }
 
-    return vec_dot_q8_0_q8_1_impl<float, VDR_Q8_0_Q8_1_MMVQ>(v, u, bq8_0->d, ggml_cuda_bf162_to_float2(bq8_1->ds).x);
+    return vec_dot_q8_0_q8_1_impl<float, VDR_Q8_0_Q8_1_MMVQ>(v, u, bq8_0->d, ggml_cuda_cast<float2>(bq8_1->ds).x);
 }
 
 static __device__ __forceinline__ float vec_dot_q2_K_q8_1(const void * __restrict__ vbq,
@@ -830,7 +831,7 @@ static __device__ __forceinline__ float vec_dot_q2_K_q8_1(const void * __restric
 #pragma unroll
     for (int i = 0; i < QR2_K; ++ i) {
         u[i]  = get_int_b4(bq8_1[bq8_offset + i].qs, iqs % QI8_1);
-        d8[i] = ggml_cuda_bf162_to_float2(bq8_1[bq8_offset + i].ds).x;
+        d8[i] = ggml_cuda_cast<float2>(bq8_1[bq8_offset + i].ds).x;
     }
 
     return vec_dot_q2_K_q8_1_impl_mmvq(v, u, scales, bq2_K->dm, d8);
@@ -858,7 +859,7 @@ static __device__ __forceinline__ float vec_dot_q3_K_q8_1(const void * __restric
 #pragma unroll
     for (int i = 0; i < QR3_K; ++i) {
         u[i]  = get_int_b4(bq8_1[bq8_offset + i].qs, iqs % QI8_1);
-        d8[i] = ggml_cuda_bf162_to_float2(bq8_1[bq8_offset + i].ds).x;
+        d8[i] = ggml_cuda_cast<float2>(bq8_1[bq8_offset + i].ds).x;
     }
 
     return vec_dot_q3_K_q8_1_impl_mmvq(vl, vh, u, bq3_K->scales, scale_offset, d, d8);
@@ -901,7 +902,7 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1(const void * __restric
 
     for (int i = 0; i < QR4_K; ++i) {
         const block_q8_1_bf16 * bq8i = bq8_1 + bq8_offset + i;
-        d8[i]                        = ggml_cuda_bf162_to_float2(bq8i->ds).x;
+        d8[i]                        = ggml_cuda_cast<float2>(bq8i->ds).x;
 
         const int * q8 = (const int *)bq8i->qs + ((iqs/2)%4);
         u[2*i+0] = q8[0];
@@ -948,7 +949,7 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1(const void * __restric
 #pragma unroll
     for (int i = 0; i < QR5_K; ++i) {
         const block_q8_1_bf16 * bq8i = bq8_1 + bq8_offset + i;
-        d8[i]                        = ggml_cuda_bf162_to_float2(bq8i->ds).x;
+        d8[i]                        = ggml_cuda_cast<float2>(bq8i->ds).x;
 
         const int * q8 = (const int *)bq8i->qs + ((iqs/2)%4);
         u[2*i+0] = q8[0];
@@ -979,7 +980,7 @@ static __device__ __forceinline__ float vec_dot_q6_K_q8_1(const void * __restric
 #pragma unroll
     for (int i = 0; i < QR6_K; ++i) {
         u[i]  = get_int_b4(bq8_1[bq8_offset + 2*i].qs, iqs % QI8_1);
-        d8[i] = ggml_cuda_bf162_to_float2(bq8_1[bq8_offset + 2 * i].ds).x;
+        d8[i] = ggml_cuda_cast<float2>(bq8_1[bq8_offset + 2 * i].ds).x;
     }
 
     return vec_dot_q6_K_q8_1_impl_mmvq(vl, vh, u, scales, bq6_K->d, d8);
@@ -1017,7 +1018,7 @@ static __device__ __forceinline__ float vec_dot_iq2_xxs_q8_1(const void * __rest
 
     const int ls = aux32 >> 27 | 1; // (scale * 2 + 1)
     sumi = sumi * ls / 8;           // (sumi * scale + sumi / 2) / 4
-    const float d = __half2float(bq2->d) * ggml_cuda_bf162_to_float2(bq8_1[iqs / 2].ds).x;
+    const float d = __half2float(bq2->d) * ggml_cuda_cast<float2>(bq8_1[iqs / 2].ds).x;
     return d * sumi;
 }
 
@@ -1059,7 +1060,7 @@ static __device__ __forceinline__ float vec_dot_iq2_xs_q8_1(const void * __restr
         }
     }
     const int sumi = (sumi0*ls0 + sumi1*ls1 + (sumi0 + sumi1)/2)/4;
-    const float d    = __half2float(bq2->d) * ggml_cuda_bf162_to_float2(bq8_1[iqs / 2].ds).x;
+    const float d    = __half2float(bq2->d) * ggml_cuda_cast<float2>(bq8_1[iqs / 2].ds).x;
     return d * sumi;
 }
 
@@ -1108,7 +1109,7 @@ static __device__ __forceinline__ float vec_dot_iq2_s_q8_1(const void * __restri
     }
     const int sumi = (sumi0*ls0 + sumi1*ls1 + (sumi0 + sumi1)/2)/4;
 
-    const float d = __half2float(bq2->d) * ggml_cuda_bf162_to_float2(bq8_1[iqs / 2].ds).x;
+    const float d = __half2float(bq2->d) * ggml_cuda_cast<float2>(bq8_1[iqs / 2].ds).x;
     return d * sumi;
 }
 
@@ -1147,7 +1148,7 @@ static __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(const void * __rest
 
     const int ls = aux32 >> 28;
     sumi = (ls*sumi + sumi/2)/2;
-    const float d = __half2float(bq3->d) * ggml_cuda_bf162_to_float2(bq8_1[iqs / 2].ds).x;
+    const float d = __half2float(bq3->d) * ggml_cuda_cast<float2>(bq8_1[iqs / 2].ds).x;
     return d * sumi;
 }
 
@@ -1191,7 +1192,7 @@ static __device__ __forceinline__ float vec_dot_iq3_s_q8_1(const void * __restri
 
     sumi *= 1 + 2*((bq3->scales[iqs/4] >> ((iqs << 1) & 0x04)) & 0x0F);
 
-    const float d = __half2float(bq3->d) * ggml_cuda_bf162_to_float2(bq8_1[iqs / 2].ds).x;
+    const float d = __half2float(bq3->d) * ggml_cuda_cast<float2>(bq8_1[iqs / 2].ds).x;
     return d * sumi;
 }
 
@@ -1226,7 +1227,7 @@ static __device__ __forceinline__ float vec_dot_iq1_s_q8_1(const void * __restri
 
     const float  d1q   = __half2float(bq1->d) * (((qh >> 11) & 0x0E) + 1);
     const float  delta = -1.0f + IQ1S_DELTA - (qh & 0x8000) * (2.0f*IQ1S_DELTA/0x8000);
-    const float2 ds    = ggml_cuda_bf162_to_float2(bq8_1[iqs].ds);
+    const float2 ds    = ggml_cuda_cast<float2>(bq8_1[iqs].ds);
     return d1q * (ds.x*sumi + ds.y*delta);
 }
 
@@ -1270,7 +1271,7 @@ static __device__ __forceinline__ float vec_dot_iq1_m_q8_1(const void * __restri
 
     iq1m_scale_t scale;
     scale.u16 = (sc[0] >> 12) | ((sc[1] >> 8) & 0x00F0) | ((sc[2] >> 4) & 0x0F00) | (sc[3] & 0xF000);
-    const float d = __half2float(scale.f16) * ggml_cuda_bf162_to_float2(bq8_1[iqs].ds).x;
+    const float d = __half2float(scale.f16) * ggml_cuda_cast<float2>(bq8_1[iqs].ds).x;
 
     const int tmp = sc[iqs/2] >> (6*(iqs%2));
     const int sc0 = 2*((tmp >> 0) & 0x07) + 1;
@@ -1299,7 +1300,7 @@ static __device__ __forceinline__ float vec_dot_iq4_nl_q8_1(const void * __restr
         sumi = ggml_cuda_dp4a(v.y, q8[l + 4], sumi);
     }
 
-    const float d = __half2float(bq4->d) * ggml_cuda_bf162_to_float2(bq8_1->ds).x;
+    const float d = __half2float(bq4->d) * ggml_cuda_cast<float2>(bq8_1->ds).x;
     return d * sumi;
 }
 
@@ -1328,6 +1329,6 @@ static __device__ __forceinline__ float vec_dot_iq4_xs_q8_1(const void * __restr
     const int ls = ((bq4->scales_l[iqs/8] >> (iqs & 0x04)) & 0x0F) | (((bq4->scales_h >> (iqs/2)) & 0x03) << 4);
     sumi *= ls - 32;
 
-    const float d = __half2float(bq4->d) * ggml_cuda_bf162_to_float2(bq8_1[iqs / 4].ds).x;
+    const float d = __half2float(bq4->d) * ggml_cuda_cast<float2>(bq8_1[iqs / 4].ds).x;
     return d * sumi;
 }

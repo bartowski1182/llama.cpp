@@ -924,16 +924,6 @@ struct block_q8_1_bf16 {
 
 static_assert(sizeof(block_q8_1_bf16) == sizeof(block_q8_1), "block_q8_1_bf16 must match block_q8_1 byte layout");
 
-static __device__ __forceinline__ float2 ggml_cuda_bf162_to_float2(const nv_bfloat162 v) {
-#if defined(GGML_USE_HIP)
-    return make_float2(__bfloat162float(__low2bfloat16(v)), __bfloat162float(__high2bfloat16(v)));
-#elif __CUDA_ARCH__ >= 800
-    return __bfloat1622float2(v);
-#else
-    return make_float2(__bfloat162float(v.x), __bfloat162float(v.y));
-#endif
-}
-
 typedef void (*dequantize_kernel_t)(const void * vx, const int64_t ib, const int iqs, float2 & v);
 
 static __device__ __forceinline__ float get_alibi_slope(
