@@ -8001,6 +8001,8 @@ static const ggml_type base_types[] = {
     GGML_TYPE_Q8_0, // for I8MM tests
     GGML_TYPE_Q1_0,
     GGML_TYPE_Q2_0,
+    GGML_TYPE_IQ2_MX,
+    GGML_TYPE_IQ3_MX,
     GGML_TYPE_Q4_0,
     GGML_TYPE_Q4_1, // for I8MM tests
     GGML_TYPE_Q4_K,
