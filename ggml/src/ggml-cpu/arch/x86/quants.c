@@ -1139,6 +1139,174 @@ void ggml_vec_dot_nvfp4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const vo
     *s = sumf;
 }
 
+void ggml_vec_dot_iq2_mx_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(n % QK_IQ2MX == 0);
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+    const block_iq2_mx * GGML_RESTRICT x = vx;
+    const block_q8_0   * GGML_RESTRICT y = vy;
+
+    const int nb = n / QK_IQ2MX;
+
+#if defined(__AVX2__)
+
+    static const uint8_t k_mask1[32] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+                                        0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03
+    };
+
+    static const uint8_t k_mask2[32] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80,
+                                        0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80,
+    };
+
+    const __m256i mask1 = _mm256_loadu_si256((const __m256i*)k_mask1);
+    const __m256i mask2 = _mm256_loadu_si256((const __m256i*)k_mask2);
+
+    // grid magnitudes reach 192, so a single _mm256_maddubs_epi16 can saturate:
+    // split the grid bytes into their low 7 bits and their 0x80 bit and widen
+    // each partial dot product to int32 before summing
+    const __m256i m7f    = _mm256_set1_epi8(0x7f);
+    const __m256i m80    = _mm256_set1_epi8((char)0x80);
+    const __m256i ones16 = _mm256_set1_epi16(1);
+
+    __m256 accumf = _mm256_setzero_ps();
+
+    for (int i = 0; i < nb; ++i) {
+        // one iq2_mx block (64 weights) maps to two q8_0 blocks
+        for (int l = 0; l < 2; ++l) {
+            const block_q8_0 * GGML_RESTRICT yb = &y[2*i + l];
+            const uint8_t sc = x[i].scales[l];
+            const uint32_t * GGML_RESTRICT grid32 = (const uint32_t *)(iq2mx_grid + (sc >> 7)*64*4);
+
+            // 8 x 6-bit indices: half 0 is bits 0..47, half 1 is bits 48..95.
+            // for half 1 start the 8 byte load at qs+4 so we never read past qs[11].
+            uint64_t idxbits;
+            memcpy(&idxbits, x[i].qs + 4*l, 8);
+            idxbits >>= 16*l;
+
+            const __m256i q2 = _mm256_set_epi32(grid32[(idxbits >> 42) & 63], grid32[(idxbits >> 36) & 63],
+                                                grid32[(idxbits >> 30) & 63], grid32[(idxbits >> 24) & 63],
+                                                grid32[(idxbits >> 18) & 63], grid32[(idxbits >> 12) & 63],
+                                                grid32[(idxbits >>  6) & 63], grid32[(idxbits >>  0) & 63]);
+
+            uint32_t signs32;
+            memcpy(&signs32, x[i].signs + 4*l, 4);
+
+            __m256i aux256 = _mm256_set1_epi32(signs32);
+            aux256 = _mm256_and_si256(_mm256_shuffle_epi8(aux256, mask1), mask2);
+            const __m256i smask = _mm256_cmpeq_epi8(aux256, mask2);
+            const __m256i q8    = _mm256_loadu_si256((const __m256i *)yb->qs);
+            const __m256i q8s   = _mm256_sub_epi8(_mm256_xor_si256(smask, q8), smask);
+
+            const __m256i dot_lo = _mm256_maddubs_epi16(_mm256_and_si256(q2, m7f), q8s);
+            const __m256i dot_hi = _mm256_maddubs_epi16(_mm256_and_si256(q2, m80), q8s);
+            const __m256i sumi   = _mm256_add_epi32(_mm256_madd_epi16(dot_lo, ones16),
+                                                    _mm256_madd_epi16(dot_hi, ones16));
+
+            // scale = 2^((sc & 0x7f) - 63), grid values are in units of 1/32
+            uint32_t bits = (uint32_t)((sc & 0x7f) + 64 - 5) << 23;
+            float d0;
+            memcpy(&d0, &bits, sizeof(d0));
+
+            const float d = d0 * GGML_CPU_FP16_TO_FP32(yb->d);
+            accumf = _mm256_fmadd_ps(_mm256_set1_ps(d), _mm256_cvtepi32_ps(sumi), accumf);
+        }
+    }
+
+    *s = hsum_float_8(accumf);
+
+#else
+    UNUSED(x);
+    UNUSED(y);
+    UNUSED(nb);
+    ggml_vec_dot_iq2_mx_q8_0_generic(n, s, bs, vx, bx, vy, by, nrc);
+#endif
+}
+
+void ggml_vec_dot_iq3_mx_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(n % QK_IQ3MX == 0);
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+    const block_iq3_mx * GGML_RESTRICT x = vx;
+    const block_q8_0   * GGML_RESTRICT y = vy;
+
+    const int nb = n / QK_IQ3MX;
+
+#if defined(__AVX2__)
+
+    static const uint8_t k_mask1[32] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+                                        0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03
+    };
+
+    static const uint8_t k_mask2[32] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80,
+                                        0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80,
+    };
+
+    const __m256i mask1 = _mm256_loadu_si256((const __m256i*)k_mask1);
+    const __m256i mask2 = _mm256_loadu_si256((const __m256i*)k_mask2);
+
+    // grid magnitudes reach 192, so a single _mm256_maddubs_epi16 can saturate:
+    // split the grid bytes into their low 7 bits and their 0x80 bit and widen
+    // each partial dot product to int32 before summing
+    const __m256i m7f    = _mm256_set1_epi8(0x7f);
+    const __m256i m80    = _mm256_set1_epi8((char)0x80);
+    const __m256i ones16 = _mm256_set1_epi16(1);
+
+    __m256 accumf = _mm256_setzero_ps();
+
+    for (int i = 0; i < nb; ++i) {
+        // one iq3_mx block (64 weights) maps to two q8_0 blocks
+        for (int l = 0; l < 2; ++l) {
+            const block_q8_0 * GGML_RESTRICT yb = &y[2*i + l];
+            const uint8_t sc = x[i].scales[l];
+            const uint32_t * GGML_RESTRICT grid32 = (const uint32_t *)(iq3mx_grid + (sc >> 7)*256*4);
+
+            const uint8_t * GGML_RESTRICT qs = x[i].qs + 8*l;
+
+            const __m256i q2 = _mm256_set_epi32(grid32[qs[7]], grid32[qs[6]], grid32[qs[5]], grid32[qs[4]],
+                                                grid32[qs[3]], grid32[qs[2]], grid32[qs[1]], grid32[qs[0]]);
+
+            uint32_t signs32;
+            memcpy(&signs32, x[i].signs + 4*l, 4);
+
+            __m256i aux256 = _mm256_set1_epi32(signs32);
+            aux256 = _mm256_and_si256(_mm256_shuffle_epi8(aux256, mask1), mask2);
+            const __m256i smask = _mm256_cmpeq_epi8(aux256, mask2);
+            const __m256i q8    = _mm256_loadu_si256((const __m256i *)yb->qs);
+            const __m256i q8s   = _mm256_sub_epi8(_mm256_xor_si256(smask, q8), smask);
+
+            const __m256i dot_lo = _mm256_maddubs_epi16(_mm256_and_si256(q2, m7f), q8s);
+            const __m256i dot_hi = _mm256_maddubs_epi16(_mm256_and_si256(q2, m80), q8s);
+            const __m256i sumi   = _mm256_add_epi32(_mm256_madd_epi16(dot_lo, ones16),
+                                                    _mm256_madd_epi16(dot_hi, ones16));
+
+            // scale = 2^((sc & 0x7f) - 63), grid values are in units of 1/32
+            uint32_t bits = (uint32_t)((sc & 0x7f) + 64 - 5) << 23;
+            float d0;
+            memcpy(&d0, &bits, sizeof(d0));
+
+            const float d = d0 * GGML_CPU_FP16_TO_FP32(yb->d);
+            accumf = _mm256_fmadd_ps(_mm256_set1_ps(d), _mm256_cvtepi32_ps(sumi), accumf);
+        }
+    }
+
+    *s = hsum_float_8(accumf);
+
+#else
+    UNUSED(x);
+    UNUSED(y);
+    UNUSED(nb);
+    ggml_vec_dot_iq3_mx_q8_0_generic(n, s, bs, vx, bx, vy, by, nrc);
+#endif
+}
+
 void ggml_vec_dot_q5_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     const int qk = QK8_0;
     const int nb = n / qk;

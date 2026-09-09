@@ -58,6 +58,14 @@ void quantize_row_mxfp4(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, i
     quantize_row_mxfp4_ref(x, y, k);
 }
 
+void quantize_row_iq2_mx(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    quantize_row_iq2_mx_ref(x, y, k);
+}
+
+void quantize_row_iq3_mx(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    quantize_row_iq3_mx_ref(x, y, k);
+}
+
 void quantize_row_nvfp4(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
     quantize_row_nvfp4_ref(x, y, k);
 }
@@ -217,6 +225,103 @@ void ggml_vec_dot_q2_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, c
         }
 
         sumf += d0 * sumi;
+    }
+
+    *s = sumf;
+}
+
+void ggml_vec_dot_iq2_mx_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(n % QK_IQ2MX == 0);
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+    const block_iq2_mx * GGML_RESTRICT x = vx;
+    const block_q8_0   * GGML_RESTRICT y = vy;
+
+    const int nb = n / QK_IQ2MX;
+
+    float sumf = 0.0f;
+
+    for (int i = 0; i < nb; i++) {
+        // one iq2_mx block (64 weights) maps to two q8_0 blocks
+        for (int l = 0; l < 2; l++) {
+            const block_q8_0 * GGML_RESTRICT yb = &y[2*i + l];
+            const uint8_t sc = x[i].scales[l];
+            const uint8_t * GGML_RESTRICT grid = iq2mx_grid + (sc >> 7)*64*4;
+
+            int sumi = 0;
+            for (int g = 0; g < 8; g++) {
+                const int bitpos = 6*(l*8 + g);
+                int idx = x[i].qs[bitpos >> 3] >> (bitpos & 7);
+                if ((bitpos & 7) > 2) {
+                    idx |= x[i].qs[(bitpos >> 3) + 1] << (8 - (bitpos & 7));
+                }
+                const uint8_t * GGML_RESTRICT cu = grid + 4*(idx & 63);
+
+                const int sbit = l*32 + 4*g;
+                const uint8_t sgn = x[i].signs[sbit >> 3] >> (sbit & 7);
+                for (int j = 0; j < 4; j++) {
+                    const int v = (sgn >> j) & 1 ? -(int)cu[j] : (int)cu[j];
+                    sumi += v * yb->qs[4*g + j];
+                }
+            }
+
+            // scale = 2^((sc & 0x7f) - 63), grid values are in units of 1/32
+            uint32_t bits = (uint32_t)((sc & 0x7f) + 64 - 5) << 23;
+            float d0;
+            memcpy(&d0, &bits, sizeof(d0));
+
+            sumf += d0 * GGML_CPU_FP16_TO_FP32(yb->d) * sumi;
+        }
+    }
+
+    *s = sumf;
+}
+
+void ggml_vec_dot_iq3_mx_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(n % QK_IQ3MX == 0);
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+    const block_iq3_mx * GGML_RESTRICT x = vx;
+    const block_q8_0   * GGML_RESTRICT y = vy;
+
+    const int nb = n / QK_IQ3MX;
+
+    float sumf = 0.0f;
+
+    for (int i = 0; i < nb; i++) {
+        // one iq3_mx block (64 weights) maps to two q8_0 blocks
+        for (int l = 0; l < 2; l++) {
+            const block_q8_0 * GGML_RESTRICT yb = &y[2*i + l];
+            const uint8_t sc = x[i].scales[l];
+            const uint8_t * GGML_RESTRICT grid = iq3mx_grid + (sc >> 7)*256*4;
+
+            int sumi = 0;
+            for (int g = 0; g < 8; g++) {
+                const uint8_t * GGML_RESTRICT cu = grid + 4*x[i].qs[l*8 + g];
+
+                const int sbit = l*32 + 4*g;
+                const uint8_t sgn = x[i].signs[sbit >> 3] >> (sbit & 7);
+                for (int j = 0; j < 4; j++) {
+                    const int v = (sgn >> j) & 1 ? -(int)cu[j] : (int)cu[j];
+                    sumi += v * yb->qs[4*g + j];
+                }
+            }
+
+            // scale = 2^((sc & 0x7f) - 63), grid values are in units of 1/32
+            uint32_t bits = (uint32_t)((sc & 0x7f) + 64 - 5) << 23;
+            float d0;
+            memcpy(&d0, &bits, sizeof(d0));
+
+            sumf += d0 * GGML_CPU_FP16_TO_FP32(yb->d) * sumi;
+        }
     }
 
     *s = sumf;

@@ -456,6 +456,263 @@ void dequantize_row_q2_0(const block_q2_0 * GGML_RESTRICT x, float * GGML_RESTRI
     }
 }
 
+// IQ2_MX: value = 2^(e-63) / 32 * grid magnitude, sign stored separately
+
+static inline float iq2mx_scale(uint8_t sc) {
+    // 2^((sc & 0x7f) - 63) via direct construction of the float exponent
+    uint32_t bits = (uint32_t)((sc & 0x7f) + 64) << 23;
+    float d;
+    memcpy(&d, &bits, sizeof(d));
+    return d;
+}
+
+static inline int iq2mx_get_idx(const uint8_t * qs, int g) {
+    // 16 groups of 6 bits packed as a little-endian bitstream
+    const int bitpos = 6*g;
+    const int byte   = bitpos >> 3;
+    const int shift  = bitpos & 7;
+    int idx = qs[byte] >> shift;
+    if (shift > 2) {
+        idx |= qs[byte + 1] << (8 - shift);
+    }
+    return idx & 63;
+}
+
+static void quantize_row_iq2_mx_impl(const float * GGML_RESTRICT x, block_iq2_mx * GGML_RESTRICT y, int64_t k,
+                                     const float * GGML_RESTRICT quant_weights) {
+    static const int qk = QK_IQ2MX;
+
+    assert(k % qk == 0);
+
+    const int nb = k / qk;
+
+    for (int i = 0; i < nb; i++) {
+        block_iq2_mx * b = &y[i];
+        memset(b->signs, 0, sizeof(b->signs));
+        memset(b->qs,    0, sizeof(b->qs));
+
+        for (int l = 0; l < 2; l++) { // two independent 32-weight halves
+            const float * xh = x + i*qk + l*32;
+            const float * wh = quant_weights ? quant_weights + i*qk + l*32 : NULL;
+
+            float amax = 0.0f;
+            for (int j = 0; j < 32; j++) {
+                amax = MAX(amax, fabsf(xh[j]));
+            }
+
+            // MXFP4 scale rule: e = floor(log2(amax)) - 2, so that amax lands on [4d, 8d)
+            int e7 = 0;
+            if (amax > 0.0f) {
+                int e;
+                frexpf(amax, &e); // amax = m * 2^e, m in [0.5, 1)
+                e7 = e - 3 + 63;
+                e7 = MIN(127, MAX(0, e7));
+                // MXFP4-sourced blocks always have amax = 4d or 6d; for generic float
+                // sources amax can land past the top of the grid (6d) - bump the scale
+                if (amax * 32.0f / iq2mx_scale((uint8_t) e7) > 192.0f) {
+                    e7 = MIN(127, e7 + 1);
+                }
+            }
+            const float id = 32.0f / iq2mx_scale((uint8_t) e7); // grid units
+
+            float t[32];
+            for (int j = 0; j < 32; j++) {
+                t[j] = fabsf(xh[j]) * id;
+                const int jj = l*32 + j;
+                // signbit instead of x < 0: the codebook reconstructs zero weights as
+                // small nonzero values, and MXFP4 sources carry the true sign of zeroed
+                // weights as -0.0f - keeping it avoids a systematic bias
+                if (signbit(xh[j])) {
+                    b->signs[jj >> 3] |= 1 << (jj & 7);
+                }
+            }
+
+            // class from the block max, mirroring the MXFP4 grid (max code is 4 or 6):
+            // choosing the class by MSE instead can clip the block's largest weight
+            float tmax = 0.0f;
+            for (int j = 0; j < 32; j++) {
+                tmax = MAX(tmax, t[j]);
+            }
+            const int cls = tmax >= 5.0f*32.0f ? 1 : 0;
+
+            const uint8_t * grid = iq2mx_grid + cls*64*4;
+            int best_idx[8];
+            for (int g = 0; g < 8; g++) {
+                const float * tg = t + 4*g;
+                const float * wg = wh ? wh + 4*g : NULL;
+                float gbest = FLT_MAX;
+                int   gidx  = 0;
+                for (int u = 0; u < 64; u++) {
+                    const uint8_t * cu = grid + 4*u;
+                    float dist = 0.0f;
+                    for (int j = 0; j < 4; j++) {
+                        const float df = tg[j] - cu[j];
+                        dist += wg ? wg[j]*df*df : df*df;
+                    }
+                    if (dist < gbest) {
+                        gbest = dist;
+                        gidx  = u;
+                    }
+                }
+                best_idx[g] = gidx;
+            }
+
+            b->scales[l] = (uint8_t)(e7 | (cls << 7));
+            for (int g = 0; g < 8; g++) {
+                const int bitpos = 6*(l*8 + g);
+                const int byte   = bitpos >> 3;
+                const int shift  = bitpos & 7;
+                b->qs[byte] |= (best_idx[g] << shift) & 0xff;
+                if (shift > 2) {
+                    b->qs[byte + 1] |= best_idx[g] >> (8 - shift);
+                }
+            }
+        }
+    }
+}
+
+void quantize_row_iq2_mx_ref(const float * GGML_RESTRICT x, block_iq2_mx * GGML_RESTRICT y, int64_t k) {
+    quantize_row_iq2_mx_impl(x, y, k, NULL);
+}
+
+void dequantize_row_iq2_mx(const block_iq2_mx * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    static const int qk = QK_IQ2MX;
+
+    assert(k % qk == 0);
+
+    const int nb = k / qk;
+
+    for (int i = 0; i < nb; i++) {
+        for (int l = 0; l < 2; l++) {
+            const uint8_t sc = x[i].scales[l];
+            const float dv = iq2mx_scale(sc) * (1.0f/32.0f);
+            const uint8_t * grid = iq2mx_grid + (sc >> 7)*64*4;
+
+            for (int g = 0; g < 8; g++) {
+                const uint8_t * cu = grid + 4*iq2mx_get_idx(x[i].qs, l*8 + g);
+                for (int j = 0; j < 4; j++) {
+                    const int jj = l*32 + 4*g + j;
+                    const float v = dv * cu[j];
+                    y[i*qk + jj] = (x[i].signs[jj >> 3] >> (jj & 7)) & 1 ? -v : v;
+                }
+            }
+        }
+    }
+}
+
+// IQ3_MX: same as IQ2_MX, but with a 256-entry codebook and plain-byte indices
+
+static void quantize_row_iq3_mx_impl(const float * GGML_RESTRICT x, block_iq3_mx * GGML_RESTRICT y, int64_t k,
+                                     const float * GGML_RESTRICT quant_weights) {
+    static const int qk = QK_IQ3MX;
+
+    assert(k % qk == 0);
+
+    const int nb = k / qk;
+
+    for (int i = 0; i < nb; i++) {
+        block_iq3_mx * b = &y[i];
+        memset(b->signs, 0, sizeof(b->signs));
+        memset(b->qs,    0, sizeof(b->qs));
+
+        for (int l = 0; l < 2; l++) { // two independent 32-weight halves
+            const float * xh = x + i*qk + l*32;
+            const float * wh = quant_weights ? quant_weights + i*qk + l*32 : NULL;
+
+            float amax = 0.0f;
+            for (int j = 0; j < 32; j++) {
+                amax = MAX(amax, fabsf(xh[j]));
+            }
+
+            // MXFP4 scale rule: e = floor(log2(amax)) - 2, so that amax lands on [4d, 8d)
+            int e7 = 0;
+            if (amax > 0.0f) {
+                int e;
+                frexpf(amax, &e); // amax = m * 2^e, m in [0.5, 1)
+                e7 = e - 3 + 63;
+                e7 = MIN(127, MAX(0, e7));
+                // MXFP4-sourced blocks always have amax = 4d or 6d; for generic float
+                // sources amax can land past the top of the grid (6d) - bump the scale
+                if (amax * 32.0f / iq2mx_scale((uint8_t) e7) > 192.0f) {
+                    e7 = MIN(127, e7 + 1);
+                }
+            }
+            const float id = 32.0f / iq2mx_scale((uint8_t) e7); // grid units
+
+            float t[32];
+            for (int j = 0; j < 32; j++) {
+                t[j] = fabsf(xh[j]) * id;
+                const int jj = l*32 + j;
+                // signbit instead of x < 0: the codebook reconstructs zero weights as
+                // small nonzero values, and MXFP4 sources carry the true sign of zeroed
+                // weights as -0.0f - keeping it avoids a systematic bias
+                if (signbit(xh[j])) {
+                    b->signs[jj >> 3] |= 1 << (jj & 7);
+                }
+            }
+
+            // class from the block max, mirroring the MXFP4 grid (max code is 4 or 6):
+            // choosing the class by MSE instead can clip the block's largest weight
+            float tmax = 0.0f;
+            for (int j = 0; j < 32; j++) {
+                tmax = MAX(tmax, t[j]);
+            }
+            const int cls = tmax >= 5.0f*32.0f ? 1 : 0;
+
+            const uint8_t * grid = iq3mx_grid + cls*256*4;
+            b->scales[l] = (uint8_t)(e7 | (cls << 7));
+            for (int g = 0; g < 8; g++) {
+                const float * tg = t + 4*g;
+                const float * wg = wh ? wh + 4*g : NULL;
+                float gbest = FLT_MAX;
+                int   gidx  = 0;
+                for (int u = 0; u < 256; u++) {
+                    const uint8_t * cu = grid + 4*u;
+                    float dist = 0.0f;
+                    for (int j = 0; j < 4; j++) {
+                        const float df = tg[j] - cu[j];
+                        dist += wg ? wg[j]*df*df : df*df;
+                    }
+                    if (dist < gbest) {
+                        gbest = dist;
+                        gidx  = u;
+                    }
+                }
+                b->qs[l*8 + g] = (uint8_t) gidx;
+            }
+        }
+    }
+}
+
+void quantize_row_iq3_mx_ref(const float * GGML_RESTRICT x, block_iq3_mx * GGML_RESTRICT y, int64_t k) {
+    quantize_row_iq3_mx_impl(x, y, k, NULL);
+}
+
+void dequantize_row_iq3_mx(const block_iq3_mx * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    static const int qk = QK_IQ3MX;
+
+    assert(k % qk == 0);
+
+    const int nb = k / qk;
+
+    for (int i = 0; i < nb; i++) {
+        for (int l = 0; l < 2; l++) {
+            const uint8_t sc = x[i].scales[l];
+            const float dv = iq2mx_scale(sc) * (1.0f/32.0f);
+            const uint8_t * grid = iq3mx_grid + (sc >> 7)*256*4;
+
+            for (int g = 0; g < 8; g++) {
+                const uint8_t * cu = grid + 4*x[i].qs[l*8 + g];
+                for (int j = 0; j < 4; j++) {
+                    const int jj = l*32 + 4*g + j;
+                    const float v = dv * cu[j];
+                    y[i*qk + jj] = (x[i].signs[jj >> 3] >> (jj & 7)) & 1 ? -v : v;
+                }
+            }
+        }
+    }
+}
+
 void dequantize_row_q4_0(const block_q4_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     static const int qk = QK4_0;
 
@@ -577,11 +834,13 @@ void dequantize_row_mxfp4(const block_mxfp4 * GGML_RESTRICT x, float * GGML_REST
         const float d = GGML_E8M0_TO_FP32_HALF(x[i].e);
 
         for (int j = 0; j < qk/2; ++j) {
-            const int8_t x0 = kvalues_mxfp4[x[i].qs[j] & 0x0F];
-            const int8_t x1 = kvalues_mxfp4[x[i].qs[j] >>   4];
+            const uint8_t q0 = x[i].qs[j] & 0x0F;
+            const uint8_t q1 = x[i].qs[j] >>   4;
 
-            y[i*qk + j + 0   ] = x0*d;
-            y[i*qk + j + qk/2] = x1*d;
+            // the negative-zero code becomes -0.0f so that the sign of zeroed
+            // weights survives dequantization (used by IQ2_MX requantization)
+            y[i*qk + j + 0   ] = q0 == 8 ? -0.0f : kvalues_mxfp4[q0]*d;
+            y[i*qk + j + qk/2] = q1 == 8 ? -0.0f : kvalues_mxfp4[q1]*d;
         }
     }
 }
@@ -2119,6 +2378,36 @@ size_t quantize_q2_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, 
     char * qrow = (char *)dst;
     for (int64_t row = 0; row < nrow; ++row) {
         quantize_row_q2_0_ref(src, (block_q2_0*)qrow, n_per_row);
+        src += n_per_row;
+        qrow += row_size;
+    }
+    return nrow * row_size;
+}
+
+size_t quantize_iq2_mx(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    if (!quant_weights) {
+        quantize_row_iq2_mx_ref(src, dst, (int64_t)nrow*n_per_row);
+        return nrow * ggml_row_size(GGML_TYPE_IQ2_MX, n_per_row);
+    }
+    size_t row_size = ggml_row_size(GGML_TYPE_IQ2_MX, n_per_row);
+    char * qrow = (char *)dst;
+    for (int64_t row = 0; row < nrow; ++row) {
+        quantize_row_iq2_mx_impl(src, (block_iq2_mx *)qrow, n_per_row, quant_weights);
+        src += n_per_row;
+        qrow += row_size;
+    }
+    return nrow * row_size;
+}
+
+size_t quantize_iq3_mx(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    if (!quant_weights) {
+        quantize_row_iq3_mx_ref(src, dst, (int64_t)nrow*n_per_row);
+        return nrow * ggml_row_size(GGML_TYPE_IQ3_MX, n_per_row);
+    }
+    size_t row_size = ggml_row_size(GGML_TYPE_IQ3_MX, n_per_row);
+    char * qrow = (char *)dst;
+    for (int64_t row = 0; row < nrow; ++row) {
+        quantize_row_iq3_mx_impl(src, (block_iq3_mx *)qrow, n_per_row, quant_weights);
         src += n_per_row;
         qrow += row_size;
     }
@@ -5192,7 +5481,10 @@ static void quantize_row_iq2_s_impl(const float * GGML_RESTRICT x, void * GGML_R
             for (int k = 0; k < 2; ++k) {
                 uint8_t s = 0;
                 for (int i = 0; i < 8; ++i) {
-                    if (xb[8*k + i] >= 0) xval[8*k + i] = xb[8*k + i];
+                    // signbit instead of x >= 0: the grid has no zero entry, so zero weights
+                    // are reconstructed as small nonzero values, and MXFP4 sources carry the
+                    // true sign of zeroed weights as -0.0f - keeping it avoids a systematic bias
+                    if (!signbit(xb[8*k + i])) xval[8*k + i] = xb[8*k + i];
                     else {
                         xval[8*k + i] = -xb[8*k + i]; s |= (1 << i);
                     }
@@ -5649,6 +5941,11 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
             {
                 VALIDATE_ROW_DATA_D_F16_IMPL(block_iq4_nl, data, nb);
             } break;
+
+        case GGML_TYPE_IQ2_MX:
+        case GGML_TYPE_IQ3_MX:
+            // every byte pattern is a valid block
+            break;
 
         case GGML_TYPE_I8:
         case GGML_TYPE_I16:
