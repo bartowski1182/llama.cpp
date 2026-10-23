@@ -38,7 +38,7 @@ void llama_log_callback_default(ggml_log_level level, const char * text, void * 
 template <typename T>
 struct no_init {
     T value;
-    no_init() = default;
+    no_init() {}
 };
 
 template <typename dst_t, typename src_t>
