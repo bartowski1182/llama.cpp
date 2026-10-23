@@ -5,6 +5,7 @@
 #include "llama.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cinttypes>
 #include <cmath>
 #include <condition_variable>
@@ -1049,7 +1050,7 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
     const llama_model_kv_override * kv_overrides = params->kv_overrides;
     std::vector<std::string> splits = {};
     llama_model_loader ml(/*metadata*/ nullptr, /*set_tensor_data*/ nullptr, /*set_tensor_data_ud*/ nullptr,
-        fname_inp, splits, /*file*/ nullptr, /*load_mode*/ load_mode, /*check_tensors*/ true, /*no_alloc*/ false, /*load_mtp*/ true, kv_overrides, nullptr);
+        fname_inp, splits, /*file*/ nullptr, /*load_mode*/ load_mode, /*check_tensors*/ false, /*no_alloc*/ false, /*load_mtp*/ true, kv_overrides, nullptr);
     ml.init_mappings(false); // no prefetching
 
     auto mparams = llama_model_default_params();
@@ -1303,6 +1304,24 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
             return ml.load_data_range(weight, offs, size, read_data.data());
         };
 
+        // validate whole rows of the current tensor, split across the threads
+        auto validate_range = [&](const void * data, size_t size) {
+            const size_t row_size = ggml_row_size(tensor->type, tensor->ne[0]);
+            const size_t nrows = size / row_size;
+            const int n = (int) std::max<size_t>(1, std::min<size_t>(nthread, nrows));
+            std::atomic<bool> valid{true};
+            workers.run([&](int ith) {
+                const size_t r0 = nrows * ith / n;
+                const size_t r1 = nrows * (ith + 1) / n;
+                if (r1 > r0 && !ggml_validate_row_data(tensor->type, (const uint8_t *) data + r0*row_size, (r1 - r0)*row_size)) {
+                    valid = false;
+                }
+            }, n);
+            if (!valid) {
+                throw std::runtime_error(format("tensor '%s' has invalid data", ggml_get_name(tensor)));
+            }
+        };
+
         LLAMA_LOG_INFO("[%4d/%4d] %-36s - [%s], type = %6s, ",
                ++idx, ml.n_tensors,
                ggml_get_name(tensor),
@@ -1348,7 +1367,9 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
 
                 for (size_t offs = 0; offs < tensor_size; offs += slab_size) {
                     const size_t size = std::min(slab_size, tensor_size - offs);
-                    fout.write((const char *) load_range(offs, size), size);
+                    const void * src = load_range(offs, size);
+                    validate_range(src, size);
+                    fout.write((const char *) src, size);
                 }
             } else {
                 const float * imatrix = nullptr;
@@ -1410,6 +1431,7 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                     const int64_t nelements_cur = nrows_cur * n_per_row;
 
                     const void * src = load_range(ir*row_size_src, nrows_cur*row_size_src);
+                    validate_range(src, nrows_cur*row_size_src);
 
                     const float * f32_data;
                     if (tensor->type == GGML_TYPE_F32) {
