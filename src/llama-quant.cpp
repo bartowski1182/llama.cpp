@@ -5,10 +5,12 @@
 #include "llama.h"
 
 #include <algorithm>
-#include <cmath>
-#include <cstring>
 #include <cinttypes>
+#include <cmath>
+#include <condition_variable>
+#include <cstring>
 #include <fstream>
+#include <functional>
 #include <mutex>
 #include <regex>
 #include <thread>
@@ -49,6 +51,72 @@ static void zeros(std::ofstream & file, size_t n) {
         file.write(&zero, 1);
     }
 }
+
+// persistent worker threads: run() calls fn(ith) on n threads (the caller is ith == 0) and waits for all of them
+struct llama_quant_workers {
+    llama_quant_workers(int nthread) : n_workers(std::max(0, nthread - 1)) {
+        for (int ith = 1; ith <= n_workers; ++ith) {
+            threads.emplace_back([this, ith]() {
+                int seen = 0;
+                while (true) {
+                    std::unique_lock<std::mutex> lock(mutex);
+                    cv.wait(lock, [&] { return stop || gen != seen; });
+                    if (stop) {
+                        return;
+                    }
+                    seen = gen;
+                    const int n = n_use;
+                    const auto * f = fn;
+                    lock.unlock();
+                    if (ith < n) {
+                        (*f)(ith);
+                    }
+                    lock.lock();
+                    if (++n_done == n_workers) {
+                        cv.notify_all();
+                    }
+                }
+            });
+        }
+    }
+
+    ~llama_quant_workers() {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            stop = true;
+        }
+        cv.notify_all();
+        for (auto & t : threads) {
+            t.join();
+        }
+    }
+
+    void run(const std::function<void(int)> & f, int n) {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            fn = &f;
+            n_use = n;
+            n_done = 0;
+            gen++;
+        }
+        cv.notify_all();
+        f(0);
+        std::unique_lock<std::mutex> lock(mutex);
+        cv.wait(lock, [&] { return n_done == n_workers; });
+    }
+
+private:
+    const int n_workers;
+    std::vector<std::thread> threads;
+    std::mutex mutex;
+    std::condition_variable cv;
+    const std::function<void(int)> * fn = nullptr;
+    int n_use = 0;
+    int gen = 0;
+    int n_done = 0;
+    bool stop = false;
+};
+
 
 static std::string remap_layer(const std::string & orig_name, const std::vector<int> & prune, std::map<int, std::string> & mapped, int & next_id) {
     if (prune.empty()) {
@@ -222,7 +290,7 @@ struct tensor_metadata {
 //
 
 static void llama_tensor_dequantize_impl(
-    ggml_type type, const void * data, float * f32_output, std::vector<std::thread> & workers,
+    ggml_type type, const void * data, float * f32_output, llama_quant_workers & workers,
     const size_t nelements, const int nthread
 ) {
     const ggml_type_traits * qtype = ggml_get_type_traits(type);
@@ -263,29 +331,20 @@ static void llama_tensor_dequantize_impl(
     size_t blocks_per_thread = nblocks / nthread;
     size_t spare_blocks = nblocks - (blocks_per_thread * nthread); // if blocks aren't divisible by thread count
 
-    size_t in_buff_offs = 0;
-    size_t out_buff_offs = 0;
+    workers.run([&](int ith) {
+        const size_t thr_blocks = blocks_per_thread + (ith == nthread - 1 ? spare_blocks : 0); // num blocks for this thread
+        const size_t thr_elems = thr_blocks * block_size; // number of elements for this thread
+        const uint8_t * inbuf = (const uint8_t *) data + ith * blocks_per_thread * block_size_bytes;
+        float * outbuf = f32_output + ith * blocks_per_thread * block_size;
 
-    for (int tnum = 0; tnum < nthread; tnum++) {
-        size_t thr_blocks = blocks_per_thread + (tnum == nthread - 1 ? spare_blocks : 0); // num blocks for this thread
-        size_t thr_elems = thr_blocks * block_size; // number of elements for this thread
-        size_t thr_block_bytes = thr_blocks * block_size_bytes; // number of input bytes for this thread
-
-        auto compute = [qtype] (ggml_type typ, const uint8_t * inbuf, float * outbuf, int nels) {
-            if (typ == GGML_TYPE_F16) {
-                ggml_fp16_to_fp32_row((const ggml_fp16_t *)inbuf, outbuf, nels);
-            } else if (typ == GGML_TYPE_BF16) {
-                ggml_bf16_to_fp32_row((const ggml_bf16_t *)inbuf, outbuf, nels);
-            } else {
-                qtype->to_float(inbuf, outbuf, nels);
-            }
-        };
-        workers.emplace_back(compute, type, (const uint8_t *) data + in_buff_offs, f32_output + out_buff_offs, thr_elems);
-        in_buff_offs += thr_block_bytes;
-        out_buff_offs += thr_elems;
-    }
-    for (auto & w : workers) { w.join(); }
-    workers.clear();
+        if (type == GGML_TYPE_F16) {
+            ggml_fp16_to_fp32_row((const ggml_fp16_t *)inbuf, outbuf, thr_elems);
+        } else if (type == GGML_TYPE_BF16) {
+            ggml_bf16_to_fp32_row((const ggml_bf16_t *)inbuf, outbuf, thr_elems);
+        } else {
+            qtype->to_float(inbuf, outbuf, thr_elems);
+        }
+    }, nthread);
 }
 
 //
@@ -804,7 +863,7 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, const llama_mod
 
 // quantize rows [first_row, first_row + nrows), indexed globally across all expert matrices
 // note: chunks never cross an expert boundary since each expert has its own imatrix slice
-static size_t llama_tensor_quantize_impl(enum ggml_type new_type, const float * f32_data, void * new_data, const int64_t chunk_size, int64_t first_row, int64_t nrows, int64_t nrows_per_expert, int64_t n_per_row, const float * imatrix, std::vector<std::thread> & workers, const int nthread) {
+static size_t llama_tensor_quantize_impl(enum ggml_type new_type, const float * f32_data, void * new_data, const int64_t chunk_size, int64_t first_row, int64_t nrows, int64_t nrows_per_expert, int64_t n_per_row, const float * imatrix, llama_quant_workers & workers, const int nthread) {
     const size_t row_size = ggml_row_size(new_type, n_per_row);
 
     auto imatrix_for_row = [=](int64_t row_global) {
@@ -863,12 +922,7 @@ static size_t llama_tensor_quantize_impl(enum ggml_type new_type, const float * 
             }
         }
     };
-    for (int it = 0; it < nthread - 1; ++it) {
-        workers.emplace_back(compute);
-    }
-    compute();
-    for (auto & w : workers) { w.join(); }
-    workers.clear();
+    workers.run([&](int /*ith*/) { compute(); }, nthread);
     if (!valid) {
         throw std::runtime_error("quantized data validation failed");
     }
@@ -1183,8 +1237,7 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
     size_t total_size_org = 0;
     size_t total_size_new = 0;
 
-    std::vector<std::thread> workers;
-    workers.reserve(nthread);
+    llama_quant_workers workers(nthread);
 
     std::vector<no_init<uint8_t>> read_data;
     std::vector<no_init<uint8_t>> work;
