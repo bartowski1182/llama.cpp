@@ -10,6 +10,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <functional>
 #include <mutex>
@@ -118,6 +119,113 @@ private:
     bool stop = false;
 };
 
+// writes buffers to the output file from a background thread, so the next slab can be quantized meanwhile
+// the writer owns the buffers: get_buffer() hands one out, write() takes it back and recycles it after the write
+struct llama_quant_writer {
+    using buffer = std::vector<no_init<uint8_t>>;
+
+    llama_quant_writer(std::ofstream & fout, size_t max_pending) : fout(fout), max_pending(max_pending) {}
+
+    ~llama_quant_writer() {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            stop = true;
+        }
+        cv.notify_all();
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+
+    // blocks while more than max_pending bytes are waiting to be written
+    buffer get_buffer(size_t size) {
+        std::unique_lock<std::mutex> lock(mutex);
+        cv.wait(lock, [&] { return pending == 0 || pending + size <= max_pending || error; });
+        rethrow();
+        buffer buf;
+        if (!free_bufs.empty()) {
+            buf = std::move(free_bufs.back());
+            free_bufs.pop_back();
+        }
+        if (buf.size() < size) {
+            buf.clear();
+            buf.resize(size);
+        }
+        return buf;
+    }
+
+    void write(buffer && buf, size_t size, size_t pad) {
+        std::unique_lock<std::mutex> lock(mutex);
+        rethrow();
+        if (!thread.joinable()) {
+            thread = std::thread([this]() { loop(); });
+        }
+        jobs.push_back({ std::move(buf), size, pad });
+        pending += size;
+        cv.notify_all();
+    }
+
+    // wait until all jobs are written and rethrow the first error, if any
+    void wait() {
+        std::unique_lock<std::mutex> lock(mutex);
+        cv.wait(lock, [&] { return pending == 0 || error; });
+        rethrow();
+    }
+
+private:
+    struct job {
+        buffer buf;
+        size_t size;
+        size_t pad;
+    };
+
+    void rethrow() {
+        if (error) {
+            std::exception_ptr e = error;
+            error = nullptr;
+            std::rethrow_exception(e);
+        }
+    }
+
+    void loop() {
+        while (true) {
+            job j;
+            {
+                std::unique_lock<std::mutex> lock(mutex);
+                cv.wait(lock, [&] { return stop || !jobs.empty(); });
+                if (jobs.empty()) {
+                    return;
+                }
+                j = std::move(jobs.front());
+                jobs.pop_front();
+            }
+            try {
+                fout.write((const char *) j.buf.data(), j.size);
+                zeros(fout, j.pad);
+            } catch (...) {
+                std::lock_guard<std::mutex> lock(mutex);
+                error = std::current_exception();
+            }
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                pending -= j.size;
+                free_bufs.push_back(std::move(j.buf));
+            }
+            cv.notify_all();
+        }
+    }
+
+    std::ofstream & fout;
+    const size_t max_pending;
+    std::thread thread;
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::deque<job> jobs;
+    std::vector<buffer> free_bufs;
+    size_t pending = 0;
+    bool stop = false;
+    std::exception_ptr error;
+};
 
 static std::string remap_layer(const std::string & orig_name, const std::vector<int> & prune, std::map<int, std::string> & mapped, int & next_id) {
     if (prune.empty()) {
@@ -1241,14 +1349,15 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
     llama_quant_workers workers(nthread);
 
     std::vector<no_init<uint8_t>> read_data;
-    std::vector<no_init<uint8_t>> work;
     std::vector<no_init<float>> f32_conv_buf;
 
     const size_t max_buf_size = params->max_buf_size ? params->max_buf_size : LLAMA_QUANT_MAX_BUF_SIZE;
 
     int cur_split = -1;
     std::ofstream fout;
+    llama_quant_writer writer(fout, max_buf_size);
     auto close_ofstream = [&]() {
+        writer.wait();
         // Write metadata and close file handler
         if (fout.is_open()) {
             fout.seekp(0);
@@ -1369,7 +1478,10 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                     const size_t size = std::min(slab_size, tensor_size - offs);
                     const void * src = load_range(offs, size);
                     validate_range(src, size);
-                    fout.write((const char *) src, size);
+                    // the source is unmapped below, so the writer gets its own copy
+                    auto buf = writer.get_buffer(size);
+                    memcpy(buf.data(), src, size);
+                    writer.write(std::move(buf), size, offs + size >= tensor_size ? GGML_PAD(new_size, align) - new_size : 0);
                 }
             } else {
                 const float * imatrix = nullptr;
@@ -1444,17 +1556,17 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                         f32_data = (const float *) f32_conv_buf.data();
                     }
 
-                    if (work.size() < nrows_cur*row_size_dst) {
-                        work.resize(nrows_cur*row_size_dst);
-                    }
+                    auto wbuf = writer.get_buffer(nrows_cur*row_size_dst);
 
                     const int64_t nchunk = (nelements_cur + chunk_size - 1)/chunk_size;
                     const int64_t nthread_use = nthread > 1 ? std::max((int64_t)1, std::min((int64_t)nthread, nchunk)) : 1;
 
-                    const size_t size_cur = llama_tensor_quantize_impl(new_type, f32_data, work.data(), chunk_size, ir, nrows_cur, nrows_per_expert, n_per_row, imatrix, workers, nthread_use);
-
-                    fout.write((const char *) work.data(), size_cur);
+                    const size_t size_cur = llama_tensor_quantize_impl(new_type, f32_data, wbuf.data(), chunk_size, ir, nrows_cur, nrows_per_expert, n_per_row, imatrix, workers, nthread_use);
                     new_size += size_cur;
+
+                    // the last slab also writes the padding of the tensor
+                    const bool last = ir + nrows_cur >= nrows_total;
+                    writer.write(std::move(wbuf), size_cur, last ? GGML_PAD(new_size, align) - new_size : 0);
                 }
                 LLAMA_LOG_INFO("size = %8.2f MiB -> %8.2f MiB\n", tensor_size/1024.0/1024.0, new_size/1024.0/1024.0);
             }
@@ -1464,9 +1576,6 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
             // update the gguf metadata as we go
             gguf_set_tensor_type(ctx_outs[cur_split].get(), metadata[i].name.c_str(), new_type);
             GGML_ASSERT(gguf_get_tensor_size(ctx_outs[cur_split].get(), gguf_find_tensor(ctx_outs[cur_split].get(), metadata[i].name.c_str())) == new_size);
-
-            // tensor data is already written, add the padding
-            zeros(fout, GGML_PAD(new_size, align) - new_size);
 
             // unmap the tensor to free memory
             if (ml.use_mmap) { ml.unmap_weight(weight); }
